@@ -1,0 +1,6 @@
+socket = "/run/nexuskvm/control.sock"
+listen = "0.0.0.0:5258"
+switch-keys = ["left-alt", "left-ctrl"]
+certificate = "/etc/rkvm/certificate.pem"
+key = "/etc/rkvm/key.pem"
+password = "change-me"

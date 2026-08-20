@@ -1,0 +1,52 @@
+{
+  "peer_side": "right",
+  "remote_peer": "studio-b",
+  "layout": {
+    "version": 1,
+    "local_peer": "local",
+    "nodes": [
+      {
+        "peer_id": "local",
+        "display_id": "main",
+        "x": 0,
+        "y": 0,
+        "width": 1920,
+        "height": 1080,
+        "scale": 1.0
+      },
+      {
+        "peer_id": "studio-b",
+        "display_id": "main",
+        "x": 1920,
+        "y": 0,
+        "width": 1920,
+        "height": 1080,
+        "scale": 1.0
+      }
+    ],
+    "barriers": [
+      {
+        "id": 1,
+        "from_peer": "local",
+        "display_id": "main",
+        "edge": "right",
+        "range_start": 0.0,
+        "range_end": 1.0,
+        "destination": "studio-b",
+        "activation_delay_ms": 0,
+        "cooldown_ms": 350
+      },
+      {
+        "id": 2,
+        "from_peer": "studio-b",
+        "display_id": "main",
+        "edge": "left",
+        "range_start": 0.0,
+        "range_end": 1.0,
+        "destination": "local",
+        "activation_delay_ms": 0,
+        "cooldown_ms": 350
+      }
+    ]
+  }
+}
