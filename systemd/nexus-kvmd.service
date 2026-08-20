@@ -1,0 +1,22 @@
+[Unit]
+Description=NexusKVM privileged input daemon
+After=network.target
+Before=display-manager.service
+
+[Service]
+Type=simple
+User=nexuskvm
+Group=nexuskvm
+ExecStart=/usr/libexec/nexuskvm/nexus-kvmd --socket /run/nexuskvm/control.sock
+Restart=always
+RestartSec=2
+RuntimeDirectory=nexuskvm
+RuntimeDirectoryMode=0750
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/run/nexuskvm /var/lib/nexuskvm
+
+[Install]
+WantedBy=multi-user.target

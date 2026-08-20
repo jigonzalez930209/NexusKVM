@@ -1,0 +1,11 @@
+[Unit]
+Description=NexusKVM graphical session agent
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/nexus-agent
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
