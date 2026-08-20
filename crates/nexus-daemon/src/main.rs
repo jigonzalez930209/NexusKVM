@@ -36,8 +36,8 @@ async fn main() -> anyhow::Result<()> {
         .with_target(true)
         .init();
     match rkvm_input::priority::raise_cpu() {
-        Ok(nice) => tracing::info!(nice, "prioridad de CPU ajustada"),
-        Err(err) => tracing::warn!(%err, "no se pudo ajustar la prioridad de CPU"),
+        Ok(nice) => tracing::info!(nice, "CPU priority raised"),
+        Err(err) => tracing::warn!(%err, "failed to raise CPU priority"),
     }
     let args = Args::parse();
     tracing::info!(config = %args.config.display(), "nexus-kvmd 0.1.0-input2");
@@ -85,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
             result?;
         }
         _ = tokio::signal::ctrl_c() => {
-            tracing::info!("saliendo por señal");
+            tracing::info!("exiting on signal");
         }
     }
     Ok(())

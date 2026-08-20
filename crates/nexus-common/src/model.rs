@@ -75,17 +75,17 @@ pub struct Layout {
 impl Layout {
     pub fn validate(&self) -> Result<(), String> {
         if self.version != 1 {
-            return Err("layout version no soportada".into());
+            return Err("unsupported layout version".into());
         }
         for b in &self.barriers {
             if !(0.0..=1.0).contains(&b.range_start)
                 || !(0.0..=1.0).contains(&b.range_end)
                 || b.range_start >= b.range_end
             {
-                return Err(format!("barrera {} tiene rango inválido", b.id));
+                return Err(format!("barrier {} has invalid range", b.id));
             }
             if !self.nodes.iter().any(|n| n.peer_id == b.destination) {
-                return Err(format!("destino {} inexistente", b.destination));
+                return Err(format!("destination {} does not exist", b.destination));
             }
         }
         Ok(())

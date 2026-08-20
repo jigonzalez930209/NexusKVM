@@ -51,13 +51,13 @@ impl<T: InputTransport> Controller<T> {
             .map(|p| p.status == PeerStatus::Connected)
             .unwrap_or(false);
         if !connected {
-            bail!("peer no disponible: {peer}");
+            bail!("peer unavailable: {peer}");
         }
         if matches!(
             *self.state.read(),
             RuntimeState::PreparingRemote { .. } | RuntimeState::ReturningLocal { .. }
         ) {
-            bail!("transición en curso");
+            bail!("transition in progress");
         }
         let id = Uuid::new_v4();
         *self.state.write() = RuntimeState::PreparingRemote {

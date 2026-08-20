@@ -10,7 +10,7 @@ use std::{
 };
 use tracing::{debug, warn};
 
-/// Sync de texto plano entre peers. No loguea el contenido.
+/// Plain-text clipboard sync between peers. Does not log content.
 pub struct ClipboardBridge {
     last_local: Arc<Mutex<String>>,
     last_applied_seq: Arc<AtomicU64>,
@@ -51,7 +51,7 @@ impl ClipboardBridge {
             let mut clip = match Clipboard::new() {
                 Ok(c) => c,
                 Err(e) => {
-                    warn!("clipboard local no disponible: {e}");
+                    warn!("local clipboard unavailable: {e}");
                     return;
                 }
             };
@@ -77,7 +77,7 @@ impl ClipboardBridge {
                 let seq = this.out_seq.fetch_add(1, Ordering::SeqCst);
                 let msg = PeerMessage::Clipboard { seq, text };
                 if let Err(e) = peer_channel::send_to(addr, &msg).await {
-                    debug!("clipboard send falló: {e}");
+                    debug!("clipboard send failed: {e}");
                 }
             }
         });

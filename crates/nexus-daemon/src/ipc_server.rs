@@ -92,7 +92,7 @@ async fn handle<T: InputTransport>(stream: UnixStream, c: Arc<Controller<T>>) ->
                 c.heartbeat(portal_available);
                 ControlResponse::ok(id, Some(c.status()))
             }
-            ControlCommand::Shutdown => ControlResponse::error(id, "shutdown remoto deshabilitado"),
+            ControlCommand::Shutdown => ControlResponse::error(id, "remote shutdown disabled"),
         };
         w.write_all(serde_json::to_string(&resp)?.as_bytes())
             .await?;

@@ -30,7 +30,7 @@ struct Args {
     data_dir: PathBuf,
     #[arg(long, value_enum, default_value_t = Role::Host)]
     role: Role,
-    /// Dirección del host (solo cliente), ej. 192.168.0.10:5258
+    /// Host address (client only), e.g. 192.168.0.10:5258
     #[arg(long)]
     server: Option<String>,
 }
@@ -48,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut layout_file = layout_store::load_or_default(&args.data_dir)?;
     if matches!(args.role, Role::Client) {
-        // En el cliente el borde de retorno es el opuesto al del host por defecto.
+        // On the client, the return edge is the opposite of the host default.
         if layout_file.peer_side == PeerSide::Right
             && layout_file.remote_peer.as_deref() == Some("peer")
         {
@@ -109,7 +109,7 @@ async fn run_host(
     let daemon = DaemonClient {
         socket: args.socket.clone(),
     };
-    // Esperar socket del daemon.
+    // Wait for the daemon socket.
     for _ in 0..50 {
         if daemon.send(ControlCommand::Status).await.is_ok() {
             break;
@@ -184,7 +184,7 @@ async fn run_host(
                         if let Err(e) = engine.configure().await {
                             warn!("reload layout: {e}");
                         } else {
-                            info!("layout recargado ({:?})", layout_file.peer_side);
+                            info!("layout reloaded ({:?})", layout_file.peer_side);
                         }
                         write_status(
                             &args.data_dir,
@@ -276,8 +276,8 @@ async fn run_client(
         .cloned()
         .collect();
 
-    // En cliente: barreras locales apuntan a "local" vía switch_local al host.
-    // Reescribimos destination a local para el filtro; el borde es peer_side.
+    // On the client: local barriers point to "local" via switch_local to the host.
+    // Rewrite destination to local for the filter; the edge is peer_side.
     let barriers = if local_barriers.is_empty() {
         layout_file
             .layout

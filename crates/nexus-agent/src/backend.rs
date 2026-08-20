@@ -57,7 +57,7 @@ struct LiveSession {
     session: ashpd::desktop::Session<InputCapture>,
 }
 
-/// Backend de producción: InputCapture portal v2 + EIS (reis).
+/// Production backend: InputCapture portal v2 + EIS (reis).
 pub struct PortalBackend {
     available: bool,
     portal_error: Option<String>,
@@ -81,7 +81,7 @@ impl PortalBackend {
                     portal_error: if available {
                         None
                     } else {
-                        Some(format!("InputCapture v{version} (se requiere v2)"))
+                        Some(format!("InputCapture v{version} (v2 required)"))
                     },
                     events: None,
                     cancel: None,
@@ -90,7 +90,7 @@ impl PortalBackend {
                 })
             }
             Err(e) => {
-                warn!("portal InputCapture no disponible: {e}");
+                warn!("portal InputCapture unavailable: {e}");
                 Ok(Self {
                     available: false,
                     portal_error: Some(e.to_string()),
@@ -231,7 +231,7 @@ fn spawn_eis_drain(fd: std::os::fd::OwnedFd, cancel: tokio::sync::watch::Receive
                 .handshake_tokio("nexus-agent", ei::handshake::ContextType::Receiver)
                 .await
             else {
-                warn!("eis handshake falló");
+                warn!("eis handshake failed");
                 return;
             };
             let mut cancel = cancel;
@@ -275,8 +275,8 @@ impl EdgeCaptureBackend for PortalBackend {
     async fn register(&mut self, barriers: Vec<Barrier>) -> Result<()> {
         if !self.available {
             anyhow::bail!(
-                "InputCapture v2 no disponible: {}",
-                self.portal_error.as_deref().unwrap_or("desconocido")
+                "InputCapture v2 unavailable: {}",
+                self.portal_error.as_deref().unwrap_or("unknown")
             );
         }
         self.shutdown_session().await;
@@ -322,7 +322,7 @@ impl EdgeCaptureBackend for PortalBackend {
             }
         }
         if portal_barriers.is_empty() {
-            anyhow::bail!("no hay barreras para registrar");
+            anyhow::bail!("no barriers to register");
         }
 
         let resp = ic
@@ -337,7 +337,7 @@ impl EdgeCaptureBackend for PortalBackend {
             .response()
             .context("barriers response")?;
         if !resp.failed_barriers().is_empty() {
-            warn!("barreras rechazadas: {:?}", resp.failed_barriers());
+            warn!("barriers rejected: {:?}", resp.failed_barriers());
         }
 
         let fd = ic
@@ -446,7 +446,7 @@ impl EdgeCaptureBackend for PortalBackend {
         self.live = Some(live);
         self.events = Some(rx);
         self.portal_error = None;
-        info!("portal barreras activas ({})", portal_barriers.len());
+        info!("portal barriers active ({})", portal_barriers.len());
         Ok(())
     }
 
@@ -454,14 +454,14 @@ impl EdgeCaptureBackend for PortalBackend {
         let rx = self
             .events
             .as_mut()
-            .ok_or_else(|| anyhow!("portal no registrado"))?;
+            .ok_or_else(|| anyhow!("portal not registered"))?;
         rx.recv()
             .await
-            .ok_or_else(|| anyhow!("canal de eventos portal cerrado"))
+            .ok_or_else(|| anyhow!("portal event channel closed"))
     }
 
     async fn suspend(&mut self) -> Result<()> {
-        // Soft-suspend: ignore activations (GNOME puede fallar al re-enable tras Disable).
+        // Soft-suspend: ignore activations (GNOME may fail to re-enable after Disable).
         self.suspended.store(true, Ordering::SeqCst);
         Ok(())
     }

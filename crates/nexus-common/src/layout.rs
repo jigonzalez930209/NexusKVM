@@ -1,7 +1,7 @@
 use crate::{Barrier, DisplayNode, Edge, Layout, LOCAL_TARGET, PeerId};
 use serde::{Deserialize, Serialize};
 
-/// Preferencia de lado del peer remoto respecto de este equipo.
+/// Preferred side of the remote peer relative to this machine.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum PeerSide {
@@ -36,7 +36,7 @@ impl PeerSide {
     }
 }
 
-/// Layout persistido + lado del peer (UI).
+/// Persisted layout + peer side (UI).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LayoutFile {
     pub peer_side: PeerSide,
@@ -73,7 +73,7 @@ impl LayoutFile {
     }
 }
 
-/// Layout de dos pantallas: el remoto queda en `side` de este equipo.
+/// Two-screen layout: the remote sits on `side` of this machine.
 pub fn two_node_layout(local: &str, remote: &str, side: PeerSide) -> Layout {
     let edge = side.as_edge();
     let display = "main";

@@ -59,7 +59,7 @@ fn msg_kind(m: &PeerMessage) -> &'static str {
     }
 }
 
-/// Extrae host:port del peer id tipo `192.168.0.143:49892` → control en :5259.
+/// Extract host:port from a peer id like `192.168.0.143:49892` → control on :5259.
 pub fn control_addr_from_peer(peer_id_or_addr: &str) -> Option<SocketAddr> {
     let host = peer_id_or_addr.split(':').next()?;
     format!("{host}:{CONTROL_PORT}").parse().ok()
