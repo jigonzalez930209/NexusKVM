@@ -5,18 +5,18 @@ NexusKVM — after install
    The installer adds you to the "input" group; a new session is required.
 
 2. Open NexusKVM:
-   - PC with keyboard/mouse → "This is the primary"
+   - PC with keyboard/mouse → "This is the host"
    - Other PC → "Connect to another" (paste the copied code)
 
-3. On the primary you should see:
+3. On the host you should see:
    - Socket: OK
    - Daemon: Active
    - A peer when the other PC connects
 
-4. Shortcut to switch PCs (primary keyboard):
+4. Hotkey to switch PCs (host keyboard):
    Left Alt + Left Ctrl (both left keys), release together.
 
-5. If the other PC does not connect, check the primary firewall (ports 5258/tcp and 5259/tcp).
+5. If the other PC does not connect, check the host firewall (ports 5258/tcp and 5259/tcp).
 6. Edge crossing uses the InputCapture portal (GNOME/Wayland). Left Alt + Left Ctrl remains as a fallback.
 7. Text clipboard syncs over port 5259 when both agents are active.
    The installer opens that port if ufw is active.
@@ -28,6 +28,6 @@ Terminal diagnostics:
 Detailed logs (app):
   ~/.local/share/io.nexuskvm.app/logs/
     nexuskvm-ui.log   — GUI actions
-    nexus-kvmd.log    — primary PC
+    nexus-kvmd.log    — host PC
     rkvm-client.log   — client PC
     nexus-agent.log   — local agent

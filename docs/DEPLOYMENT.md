@@ -9,7 +9,7 @@
    - loads `uinput` and reloads udev
    - opens port **5258/tcp** if `ufw` is active
 4. **Log out** (required the first time) and open NexusKVM.
-5. Primary: **This is the primary**. Remote: **Connect to another** with the copied code.
+5. Host: **This is the host**. Client: **Connect to another** with the copied code.
 
 The GUI generates certificates, writes config, and launches `nexus-kvmd` or `rkvm-client`. Do not use `chmod 666 /dev/uinput`.
 

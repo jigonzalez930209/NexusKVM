@@ -17,7 +17,7 @@ npm run format:check
 
 ## Real path (no mocks)
 
-From the Tauri app: on the primary PC tap «This is the primary», copy the pairing, and on the other paste it. The GUI starts `nexus-kvmd` or `rkvm-client`.
+From the Tauri app: on the host PC tap «This is the host», copy the pairing code, and on the other paste it. The GUI starts `nexus-kvmd` or `rkvm-client`.
 
 Via CLI:
 
