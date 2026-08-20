@@ -1,0 +1,58 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "NexusKVM",
+  "version": "0.1.0",
+  "identifier": "io.nexuskvm.app",
+  "build": {
+    "beforeDevCommand": "bash scripts/build-runtime-bins.sh && npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "bash scripts/build-runtime-bins.sh --release && npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "NexusKVM",
+        "width": 1180,
+        "height": 820,
+        "minWidth": 960,
+        "minHeight": 700,
+        "decorations": true,
+        "transparent": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb"],
+    "category": "Utility",
+    "shortDescription": "Spatial KVM for Linux",
+    "longDescription": "Share keyboard and mouse between Linux PCs. The app generates certificates and starts the daemon or client automatically.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png"
+    ],
+    "externalBin": [
+      "binaries/nexus-kvmd",
+      "binaries/nexus-agent",
+      "binaries/nexusctl",
+      "binaries/rkvm-client"
+    ],
+    "linux": {
+      "deb": {
+        "depends": ["openssl", "libevdev2", "kmod"],
+        "files": {
+          "/usr/lib/udev/rules.d/70-nexuskvm-uinput.rules": "../udev/70-nexuskvm-desktop.rules",
+          "/etc/modules-load.d/nexuskvm-uinput.conf": "../packaging/nexuskvm-uinput.conf",
+          "/usr/share/doc/nexuskvm/POSTINSTALL.txt": "../packaging/POSTINSTALL.txt"
+        },
+        "postInstallScript": "../scripts/deb-postinst.sh"
+      }
+    }
+  }
+}
