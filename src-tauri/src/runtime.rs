@@ -201,9 +201,9 @@ fn generate_certs(dir: &Path) -> anyhow::Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map_err(|_| anyhow::anyhow!("openssl no está instalado"))?;
+        .map_err(|_| anyhow::anyhow!("openssl is not installed"))?;
     if !status.success() {
-        anyhow::bail!("openssl no pudo generar el certificado");
+        anyhow::bail!("openssl failed to generate the certificate");
     }
     Ok(())
 }
@@ -433,7 +433,7 @@ fn spawn_agent(
     server: Option<&str>,
 ) -> anyhow::Result<Child> {
     let agent_bin = find_bin(app, "nexus-agent").ok_or_else(|| {
-        anyhow::anyhow!("no encuentro nexus-agent; compilalo con cargo build -p nexus-agent")
+        anyhow::anyhow!("nexus-agent not found; build it with: cargo build -p nexus-agent")
     })?;
     let sock = socket_path().to_string_lossy().to_string();
     let data = dir.to_string_lossy().to_string();
@@ -495,7 +495,7 @@ fn spawn_logged(
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_err))
         .spawn()
-        .map_err(|e| anyhow::anyhow!("no se pudo arrancar {}: {e}", bin.display()))
+        .map_err(|e| anyhow::anyhow!("failed to start {}: {e}", bin.display()))
 }
 
 fn child_failure(dir: &Path, service: &str) -> String {
@@ -503,11 +503,11 @@ fn child_failure(dir: &Path, service: &str) -> String {
     let tail = read_log_tail(&log_path, 16);
     if tail.is_empty() {
         format!(
-            "{service} terminó al arrancar. Revisá {}/logs/{service}.log",
+            "{service} exited on startup. Check {}/logs/{service}.log",
             dir.display()
         )
     } else {
-        format!("{service} terminó al arrancar. Log:\n{tail}")
+        format!("{service} exited on startup. Log:\n{tail}")
     }
 }
 
@@ -522,14 +522,14 @@ fn client_preflight() -> anyhow::Result<()> {
 fn session_preflight() -> anyhow::Result<()> {
     if !in_input_group() {
         anyhow::bail!(
-            "Tu usuario todavía no tiene permiso sobre /dev/uinput. \
-             Cerrá sesión y volvé a entrar (o reiniciá) después de instalar NexusKVM."
+            "Your user still lacks permission on /dev/uinput. \
+             Log out and back in (or reboot) after installing NexusKVM."
         );
     }
     if !uinput_accessible() {
         anyhow::bail!(
-            "No se puede abrir /dev/uinput. Reiniciá la sesión; si sigue igual, \
-             revisá que el paquete instaló las reglas udev (grupo input)."
+            "Cannot open /dev/uinput. Restart your session; if it still fails, \
+             check that the package installed the udev rules (input group)."
         );
     }
     Ok(())
@@ -715,7 +715,7 @@ pub async fn start(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
     let dir = data_dir(app)?;
     ui_log(&dir, "start_runtime");
     let state =
-        load_state(&dir).ok_or_else(|| anyhow::anyhow!("todavía no configuraste este equipo"))?;
+        load_state(&dir).ok_or_else(|| anyhow::anyhow!("this machine is not configured yet"))?;
     match state.role {
         Role::Host => {
             host_preflight()?;
@@ -723,7 +723,7 @@ pub async fn start(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
             if !socket_alive().await {
                 let bin = find_bin(app, "nexus-kvmd").ok_or_else(|| {
                     anyhow::anyhow!(
-                        "no encuentro un nexus-kvmd actual (con --config). Compilá con: cargo build -p nexus-daemon --bin nexus-kvmd"
+                        "current nexus-kvmd not found (with --config). Build with: cargo build -p nexus-daemon --bin nexus-kvmd"
                     )
                 })?;
                 let cfg = daemon_config_path(&dir);
@@ -732,7 +732,7 @@ pub async fn start(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
                     let mut g = rt
                         .inner
                         .lock()
-                        .map_err(|_| anyhow::anyhow!("runtime ocupado"))?;
+                        .map_err(|_| anyhow::anyhow!("runtime busy"))?;
                     g.last_error = None;
                     kill(&mut g.daemon);
                     g.daemon = Some(spawn_logged(
@@ -748,7 +748,7 @@ pub async fn start(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
                     let mut g = rt
                         .inner
                         .lock()
-                        .map_err(|_| anyhow::anyhow!("runtime ocupado"))?;
+                        .map_err(|_| anyhow::anyhow!("runtime busy"))?;
                     if !child_running(&mut g.daemon) {
                         let msg = child_failure(&dir, "nexus-kvmd");
                         g.last_error = Some(msg.clone());
@@ -764,7 +764,7 @@ pub async fn start(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
                 let mut g = rt
                     .inner
                     .lock()
-                    .map_err(|_| anyhow::anyhow!("runtime ocupado"))?;
+                    .map_err(|_| anyhow::anyhow!("runtime busy"))?;
                 kill(&mut g.agent);
                 g.agent = Some(agent);
             }
@@ -772,7 +772,7 @@ pub async fn start(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
                 let mut g = rt
                     .inner
                     .lock()
-                    .map_err(|_| anyhow::anyhow!("runtime ocupado"))?;
+                    .map_err(|_| anyhow::anyhow!("runtime busy"))?;
                 let msg = child_failure(&dir, "nexus-kvmd");
                 g.last_error = Some(msg.clone());
                 ui_log(&dir, &format!("daemon socket missing: {msg}"));
@@ -784,12 +784,12 @@ pub async fn start(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
             client_preflight()?;
             let bin = find_bin(app, "rkvm-client").ok_or_else(|| {
                 anyhow::anyhow!(
-                    "no encuentro rkvm-client. Compilalo con: cargo build -p rkvm-client --manifest-path rkvm-master/Cargo.toml"
+                    "rkvm-client not found. Build it with: cargo build -p rkvm-client --manifest-path rkvm-master/Cargo.toml"
                 )
             })?;
             let cfg = client_config_path(&dir);
             if !cfg.is_file() {
-                anyhow::bail!("falta client.toml; conectá de nuevo con el código del principal");
+                anyhow::bail!("missing client.toml; reconnect using the primary machine's invite code");
             }
             let cfg_s = cfg.to_string_lossy().to_string();
             ui_log(&dir, &format!("client config: {cfg_s}"));
@@ -797,7 +797,7 @@ pub async fn start(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
                 let mut g = rt
                     .inner
                     .lock()
-                    .map_err(|_| anyhow::anyhow!("runtime ocupado"))?;
+                    .map_err(|_| anyhow::anyhow!("runtime busy"))?;
                 g.last_error = None;
                 kill(&mut g.client);
                 g.client = Some(spawn_logged(
@@ -813,7 +813,7 @@ pub async fn start(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
                 let mut g = rt
                     .inner
                     .lock()
-                    .map_err(|_| anyhow::anyhow!("runtime ocupado"))?;
+                    .map_err(|_| anyhow::anyhow!("runtime busy"))?;
                 if !child_running(&mut g.client) {
                     let msg = child_failure(&dir, "rkvm-client");
                     g.last_error = Some(msg.clone());
@@ -830,7 +830,7 @@ pub async fn start(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
                     })
                 })
             });
-            // Layout de retorno: host a la izquierda por defecto.
+            // Return layout: host on the left by default.
             if !layout_store::layout_path(&dir).is_file() {
                 let f = LayoutFile::default_right(None).with_side(PeerSide::Left);
                 layout_store::save(&dir, &f)?;
@@ -840,7 +840,7 @@ pub async fn start(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
                 let mut g = rt
                     .inner
                     .lock()
-                    .map_err(|_| anyhow::anyhow!("runtime ocupado"))?;
+                    .map_err(|_| anyhow::anyhow!("runtime busy"))?;
                 kill(&mut g.agent);
                 g.agent = Some(agent);
             }
@@ -853,9 +853,9 @@ pub async fn start(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
 pub fn invite(app: &AppHandle) -> anyhow::Result<Invite> {
     let dir = data_dir(app)?;
     let password = fs::read_to_string(password_path(&dir))
-        .map_err(|_| anyhow::anyhow!("no hay contraseña; configurá este equipo como principal"))?;
+        .map_err(|_| anyhow::anyhow!("no password; configure this machine as primary"))?;
     let certificate = fs::read_to_string(cert_path(&dir))
-        .map_err(|_| anyhow::anyhow!("no hay certificado todavía"))?;
+        .map_err(|_| anyhow::anyhow!("no certificate yet"))?;
     Ok(Invite {
         server: advertise(),
         password: password.trim().into(),
@@ -870,7 +870,7 @@ pub fn set_peer_side(app: &AppHandle, side: &str) -> anyhow::Result<LayoutFile> 
         "right" => PeerSide::Right,
         "top" => PeerSide::Top,
         "bottom" => PeerSide::Bottom,
-        _ => anyhow::bail!("lado inválido: {side} (left|right|top|bottom)"),
+        _ => anyhow::bail!("invalid side: {side} (left|right|top|bottom)"),
     };
     let mut file = layout_store::load_or_default(&dir)?;
     file = file.with_side(peer_side);
