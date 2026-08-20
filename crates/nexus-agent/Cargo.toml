@@ -1,0 +1,22 @@
+[package]
+name="nexus-agent"
+version.workspace=true
+edition.workspace=true
+license.workspace=true
+
+[dependencies]
+nexus-common={path="../nexus-common"}
+anyhow.workspace=true
+arboard.workspace=true
+ashpd.workspace=true
+async-trait.workspace=true
+clap.workspace=true
+futures-util.workspace=true
+reis.workspace=true
+serde={workspace=true, features=["derive"]}
+serde_json.workspace=true
+tokio.workspace=true
+tracing.workspace=true
+tracing-subscriber.workspace=true
+uuid.workspace=true
+zbus.workspace=true
