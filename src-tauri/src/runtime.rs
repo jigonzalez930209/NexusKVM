@@ -308,9 +308,9 @@ fn fail_child(dir: &Path, service: &str, g: &mut Inner) -> Option<String> {
     let log_path = logs_dir(dir).join(format!("{service}.log"));
     let tail = read_log_tail(&log_path, 12);
     let msg = if tail.is_empty() {
-        format!("{service} se detuvo. Ver {log_path:?}")
+        format!("{service} stopped. See {log_path:?}")
     } else {
-        format!("{service} se detuvo:\n{tail}")
+        format!("{service} stopped:\n{tail}")
     };
     ui_log(dir, &format!("WARN {service} exited: {msg}"));
     g.last_error = Some(msg.clone());
@@ -789,7 +789,7 @@ pub async fn start(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
             })?;
             let cfg = client_config_path(&dir);
             if !cfg.is_file() {
-                anyhow::bail!("missing client.toml; reconnect using the primary machine's invite code");
+                anyhow::bail!("missing client.toml; reconnect using the host machine's invite code");
             }
             let cfg_s = cfg.to_string_lossy().to_string();
             ui_log(&dir, &format!("client config: {cfg_s}"));
@@ -853,7 +853,7 @@ pub async fn start(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
 pub fn invite(app: &AppHandle) -> anyhow::Result<Invite> {
     let dir = data_dir(app)?;
     let password = fs::read_to_string(password_path(&dir))
-        .map_err(|_| anyhow::anyhow!("no password; configure this machine as primary"))?;
+        .map_err(|_| anyhow::anyhow!("no password; configure this machine as host"))?;
     let certificate = fs::read_to_string(cert_path(&dir))
         .map_err(|_| anyhow::anyhow!("no certificate yet"))?;
     Ok(Invite {

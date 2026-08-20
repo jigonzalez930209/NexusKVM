@@ -190,7 +190,7 @@ pub fn run() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("error al ejecutar NexusKVM")
+        .expect("failed to run NexusKVM")
         .run(move |_app, event| {
             if let tauri::RunEvent::Exit = event {
                 runtime_exit.shutdown();
