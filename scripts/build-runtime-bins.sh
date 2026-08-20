@@ -28,11 +28,11 @@ setup_libevdev() {
 }
 
 if ! setup_libevdev; then
-  echo "No se encontró libevdev.pc (el paquete de runtime no alcanza)." >&2
-  echo "Instalá: sudo apt install libevdev-dev libclang-dev" >&2
-  echo "O poné un libevdev.pc en ~/.local/pkgconfig y reintentá." >&2
+  echo "libevdev.pc not found (the runtime package is not enough)." >&2
+  echo "Install: sudo apt install libevdev-dev libclang-dev" >&2
+  echo "Or place a libevdev.pc in ~/.local/pkgconfig and retry." >&2
   if [[ -x "target/${PROFILE}/nexus-kvmd" ]]; then
-    echo "Sigo con los binarios ya compilados en target/${PROFILE}." >&2
+    echo "Continuing with binaries already built in target/${PROFILE}." >&2
   else
     exit 1
   fi

@@ -25,27 +25,27 @@ add_input_group() {
   user=$1
   if getent group input >/dev/null 2>&1; then
     if id -nG "$user" 2>/dev/null | tr ' ' '\n' | grep -qx input; then
-      log "usuario $user ya está en el grupo input"
+      log "user $user is already in the input group"
     else
-      usermod -aG input "$user" && log "usuario $user agregado al grupo input"
+      usermod -aG input "$user" && log "user $user added to the input group"
     fi
   else
-    log "grupo input no existe en este sistema; omitiendo usermod"
+    log "input group does not exist on this system; skipping usermod"
   fi
 }
 
 setup_uinput() {
   if modprobe uinput 2>/dev/null; then
-    log "módulo uinput cargado"
+    log "uinput module loaded"
   else
-    log "no se pudo cargar uinput (puede estar integrado en el kernel)"
+    log "could not load uinput (may be built into the kernel)"
   fi
   if command -v udevadm >/dev/null 2>&1; then
     udevadm control --reload-rules || true
     udevadm trigger --subsystem-match=misc --action=add || true
     udevadm trigger --subsystem-match=input --action=add || true
     udevadm trigger --name-match=uinput || true
-    log "reglas udev recargadas"
+    log "udev rules reloaded"
   fi
 }
 
@@ -55,14 +55,14 @@ setup_firewall() {
   fi
   if ufw status 2>/dev/null | grep -qi 'Status: active'; then
     if ufw allow 5258/tcp comment 'NexusKVM peer connections' >/dev/null 2>&1; then
-      log "ufw: puerto 5258/tcp permitido"
+      log "ufw: port 5258/tcp allowed"
     else
-      log "ufw activo pero no se pudo abrir 5258/tcp (revisá manualmente)"
+      log "ufw is active but could not open 5258/tcp (check manually)"
     fi
     if ufw allow 5259/tcp comment 'NexusKVM clipboard/control' >/dev/null 2>&1; then
-      log "ufw: puerto 5259/tcp permitido"
+      log "ufw: port 5259/tcp allowed"
     else
-      log "ufw activo pero no se pudo abrir 5259/tcp (revisá manualmente)"
+      log "ufw is active but could not open 5259/tcp (check manually)"
     fi
   fi
 }
@@ -72,24 +72,24 @@ print_notice() {
   cat <<EOF
 
 ============================================================
- NexusKVM instalado correctamente
+ NexusKVM installed successfully
 ============================================================
 EOF
   if [ -n "$user" ]; then
     cat <<EOF
- • Tu usuario ($user) fue agregado al grupo "input".
- • CERRÁ SESIÓN y volvé a entrar (o reiniciá) antes de usar la app.
+ • Your user ($user) was added to the "input" group.
+ • LOG OUT and log back in (or reboot) before using the app.
 EOF
   else
     cat <<EOF
- • Agregá tu usuario al grupo input:
-     sudo usermod -aG input TU_USUARIO
-   y después cerrá sesión.
+ • Add your user to the input group:
+     sudo usermod -aG input YOUR_USER
+   and then log out.
 EOF
   fi
   cat <<EOF
- • Atajo en el PC principal: Left Alt + Left Ctrl (izquierdas).
- • Guía completa: /usr/share/doc/nexuskvm/POSTINSTALL.txt
+ • Shortcut on the primary PC: Left Alt + Left Ctrl (left keys).
+ • Full guide: /usr/share/doc/nexuskvm/POSTINSTALL.txt
 ============================================================
 
 EOF
@@ -101,7 +101,7 @@ case "$1" in
     if user=$(install_user); then
       add_input_group "$user"
     else
-      log "no se detectó usuario de escritorio; omitiendo usermod"
+      log "no desktop user detected; skipping usermod"
     fi
     setup_uinput
     setup_firewall
