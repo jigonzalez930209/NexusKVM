@@ -11,4 +11,4 @@ sudo install -Dm644 systemd/nexus-agent.service /usr/lib/systemd/user/nexus-agen
 sudo install -Dm644 udev/70-nexuskvm-uinput.rules /usr/lib/udev/rules.d/70-nexuskvm-uinput.rules
 sudo systemctl daemon-reload
 sudo udevadm control --reload-rules
-echo 'Instalado. Habilite el daemon solo después de probar el modo mock.'
+echo 'Installed. Enable the daemon only after testing mock mode.'

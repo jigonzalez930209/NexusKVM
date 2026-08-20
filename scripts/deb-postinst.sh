@@ -88,7 +88,7 @@ EOF
 EOF
   fi
   cat <<EOF
- • Shortcut on the primary PC: Left Alt + Left Ctrl (left keys).
+ • Hotkey on the host PC: Left Alt + Left Ctrl (left keys).
  • Full guide: /usr/share/doc/nexuskvm/POSTINSTALL.txt
 ============================================================
 
