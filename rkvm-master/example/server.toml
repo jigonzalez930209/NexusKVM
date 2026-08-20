@@ -1,0 +1,14 @@
+listen = "0.0.0.0:5258"
+# See `switch-keys.md` in the repository root for the list of all possible keys.
+switch-keys = ["left-alt", "left-ctrl"]
+# Whether switch key presses should be propagated on the server and its clients.
+# Optional, defaults to true.
+# propagate-switch-keys = true
+certificate = "/etc/rkvm/certificate.pem"
+key = "/etc/rkvm/key.pem"
+
+# This is to prevent malicious clients from connecting to the server.
+# Make sure this matches your client's config.
+#
+# Change this to your own value before deploying rkvm.
+password = "123456789"

@@ -1,0 +1,18 @@
+[package]
+name = "rkvm-net"
+version = "0.1.0"
+authors = ["Jan Trefil <8711792+htrefil@users.noreply.github.com>"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rkvm-input = { path = "../rkvm-input" }
+serde = { version = "1.0.117", features = ["derive"] }
+bincode = "1.3.3"
+tokio = { version = "1.0.1", features = ["io-util"] }
+thiserror = "1.0.40"
+hmac = "0.12.1"
+sha2 = "0.10.6"
+rand = "0.8.5"
+tracing = "0.1.37"

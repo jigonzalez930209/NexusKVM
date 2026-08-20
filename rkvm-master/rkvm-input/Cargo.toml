@@ -1,0 +1,36 @@
+[package]
+name = "rkvm-input"
+version = "0.1.0"
+authors = ["Jan Trefil <8711792+htrefil@users.noreply.github.com>"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+serde = { version = "1.0.117", features = ["derive"] }
+futures = "0.3.8"
+smallvec = { version = "1.10.0", features = ["serde"] }
+inotify = "0.10.0"
+tokio = { version = "1.0.1", features = ["fs", "io-util", "net", "sync", "rt", "time", "macros"] }
+libc = "0.2.77"
+thiserror = "1.0.40"
+tracing = "0.1.37"
+
+[build-dependencies]
+bindgen = "0.65.1"
+cc = "1.0.83"
+pkg-config = "0.3.19"
+
+[lib]
+doctest = false
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ["cfg(have_abs_profile)"] }
+mismatched_lifetime_syntaxes = "allow"
+
+[lints.clippy]
+io_other_error = "allow"
+new_without_default = "allow"
+unnecessary_map_or = "allow"
+useless_conversion = "allow"
+
