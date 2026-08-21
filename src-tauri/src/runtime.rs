@@ -108,14 +108,14 @@ fn runtime_dir() -> PathBuf {
 }
 
 pub fn socket_path() -> PathBuf {
-    runtime_dir().join("control.sock")
+    crate::persist::control_socket_path()
 }
 
 fn state_path(dir: &Path) -> PathBuf {
     dir.join("state.json")
 }
 
-fn load_state(dir: &Path) -> Option<SavedState> {
+pub(crate) fn load_state(dir: &Path) -> Option<SavedState> {
     let raw = fs::read_to_string(state_path(dir)).ok()?;
     serde_json::from_str(&raw).ok()
 }
@@ -134,10 +134,10 @@ fn cert_path(dir: &Path) -> PathBuf {
 fn key_path(dir: &Path) -> PathBuf {
     dir.join("key.pem")
 }
-fn daemon_config_path(dir: &Path) -> PathBuf {
+pub(crate) fn daemon_config_path(dir: &Path) -> PathBuf {
     dir.join("daemon.toml")
 }
-fn client_config_path(dir: &Path) -> PathBuf {
+pub(crate) fn client_config_path(dir: &Path) -> PathBuf {
     dir.join("client.toml")
 }
 
@@ -255,7 +255,7 @@ fn push_named(candidates: &mut Vec<PathBuf>, dir: &Path, name: &str) {
     }
 }
 
-fn find_bin(app: &AppHandle, name: &str) -> Option<PathBuf> {
+pub(crate) fn find_bin(app: &AppHandle, name: &str) -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(dir) = app.path().resource_dir() {
         push_named(&mut candidates, &dir, name);
@@ -352,7 +352,7 @@ fn logs_dir(dir: &Path) -> PathBuf {
     dir.join("logs")
 }
 
-fn ui_log(dir: &Path, msg: &str) {
+pub(crate) fn ui_log(dir: &Path, msg: &str) {
     let path = logs_dir(dir).join("nexuskvm-ui.log");
     let _ = fs::create_dir_all(logs_dir(dir));
     use std::io::Write;
@@ -593,8 +593,12 @@ pub async fn snapshot(app: &AppHandle, rt: &AppRuntime) -> RuntimeSnapshot {
         false
     };
     let service_ok = match role {
-        Some(Role::Host) => sock || daemon_alive,
-        Some(Role::Client) => client_alive,
+        Some(Role::Host) => {
+            sock || daemon_alive || crate::persist::boot_service_active(Role::Host)
+        }
+        Some(Role::Client) => {
+            client_alive || crate::persist::boot_service_active(Role::Client)
+        }
         None => false,
     };
     let running = service_ok;
@@ -655,7 +659,7 @@ pub async fn setup_host(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<Runt
     let dir = data_dir(app)?;
     let password = ensure_password(&dir)?;
     generate_certs(&dir)?;
-    write_daemon_toml(&dir, &password, &socket_path())?;
+    write_daemon_toml(&dir, &password, &runtime_dir().join("control.sock"))?;
     ensure_default_layout(&dir)?;
     save_state(
         &dir,
@@ -665,6 +669,8 @@ pub async fn setup_host(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<Runt
         },
     )?;
     start(app, rt).await?;
+    let _ = crate::persist::install_persistence(app, &dir);
+    detach_if_boot_owned(rt, Role::Host);
     Ok(snapshot(app, rt).await)
 }
 
@@ -685,11 +691,25 @@ pub async fn setup_client(
         },
     )?;
     start(app, rt).await?;
+    let _ = crate::persist::install_persistence(app, &dir);
+    detach_if_boot_owned(rt, Role::Client);
     Ok(snapshot(app, rt).await)
+}
+
+fn detach_if_boot_owned(rt: &AppRuntime, role: Role) {
+    if !crate::persist::boot_service_active(role) {
+        return;
+    }
+    if let Ok(mut g) = rt.inner.lock() {
+        // systemd owns the role binary; drop child handles without killing.
+        let _ = g.daemon.take();
+        let _ = g.client.take();
+    }
 }
 
 pub fn reset_setup(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
     rt.shutdown();
+    crate::persist::clear_persistence(app);
     if let Ok(dir) = data_dir(app) {
         let _ = fs::remove_file(state_path(&dir));
     }
@@ -720,7 +740,15 @@ pub async fn start(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
         Role::Host => {
             host_preflight()?;
             ensure_default_layout(&dir)?;
-            if !socket_alive().await {
+            let boot = crate::persist::boot_service_active(Role::Host);
+            if boot {
+                ui_log(&dir, "host boot service already active");
+                if let Ok(mut g) = rt.inner.lock() {
+                    g.last_error = None;
+                    // systemd owns the daemon; drop any stale child handle.
+                    let _ = g.daemon.take();
+                }
+            } else if !socket_alive().await {
                 let bin = find_bin(app, "nexus-kvmd").ok_or_else(|| {
                     anyhow::anyhow!(
                         "current nexus-kvmd not found (with --config). Build with: cargo build -p nexus-daemon --bin nexus-kvmd"
@@ -758,6 +786,9 @@ pub async fn start(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
                 }
             } else {
                 ui_log(&dir, "daemon socket already alive");
+                if let Ok(mut g) = rt.inner.lock() {
+                    g.last_error = None;
+                }
             }
             {
                 let agent = spawn_agent(app, &dir, Role::Host, None)?;
@@ -768,12 +799,25 @@ pub async fn start(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
                 kill(&mut g.agent);
                 g.agent = Some(agent);
             }
+            // Give the agent / socket a moment when talking to the system unit.
+            if boot && !socket_alive().await {
+                sleep(Duration::from_millis(500)).await;
+            }
             if !socket_alive().await {
                 let mut g = rt
                     .inner
                     .lock()
                     .map_err(|_| anyhow::anyhow!("runtime busy"))?;
-                let msg = child_failure(&dir, "nexus-kvmd");
+                let msg = if boot {
+                    format!(
+                        "nexus-kvmd boot service is running but the control socket \
+                         ({}) is not reachable. Are you in the input group? Log out \
+                         and back in after install.",
+                        socket_path().display()
+                    )
+                } else {
+                    child_failure(&dir, "nexus-kvmd")
+                };
                 g.last_error = Some(msg.clone());
                 ui_log(&dir, &format!("daemon socket missing: {msg}"));
                 anyhow::bail!(msg);
@@ -782,43 +826,50 @@ pub async fn start(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
         }
         Role::Client => {
             client_preflight()?;
-            let bin = find_bin(app, "rkvm-client").ok_or_else(|| {
-                anyhow::anyhow!(
-                    "rkvm-client not found. Build it with: cargo build -p rkvm-client --manifest-path rkvm-master/Cargo.toml"
-                )
-            })?;
-            let cfg = client_config_path(&dir);
-            if !cfg.is_file() {
-                anyhow::bail!("missing client.toml; reconnect using the host machine's invite code");
-            }
-            let cfg_s = cfg.to_string_lossy().to_string();
-            ui_log(&dir, &format!("client config: {cfg_s}"));
-            {
-                let mut g = rt
-                    .inner
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("runtime busy"))?;
-                g.last_error = None;
-                kill(&mut g.client);
-                g.client = Some(spawn_logged(
-                    &dir,
-                    "rkvm-client",
-                    &bin,
-                    &[&cfg_s],
-                    "rkvm_client=info,rkvm_input=info",
-                )?);
-            }
-            sleep(Duration::from_millis(1500)).await;
-            {
-                let mut g = rt
-                    .inner
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("runtime busy"))?;
-                if !child_running(&mut g.client) {
-                    let msg = child_failure(&dir, "rkvm-client");
-                    g.last_error = Some(msg.clone());
-                    ui_log(&dir, &format!("ERROR rkvm-client: {msg}"));
-                    anyhow::bail!(msg);
+            let boot = crate::persist::boot_service_active(Role::Client);
+            if boot {
+                ui_log(&dir, "client boot service already active");
+            } else {
+                let bin = find_bin(app, "rkvm-client").ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "rkvm-client not found. Build it with: cargo build -p rkvm-client --manifest-path rkvm-master/Cargo.toml"
+                    )
+                })?;
+                let cfg = client_config_path(&dir);
+                if !cfg.is_file() {
+                    anyhow::bail!(
+                        "missing client.toml; reconnect using the host machine's invite code"
+                    );
+                }
+                let cfg_s = cfg.to_string_lossy().to_string();
+                ui_log(&dir, &format!("client config: {cfg_s}"));
+                {
+                    let mut g = rt
+                        .inner
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("runtime busy"))?;
+                    g.last_error = None;
+                    kill(&mut g.client);
+                    g.client = Some(spawn_logged(
+                        &dir,
+                        "rkvm-client",
+                        &bin,
+                        &[&cfg_s],
+                        "rkvm_client=info,rkvm_input=info",
+                    )?);
+                }
+                sleep(Duration::from_millis(1500)).await;
+                {
+                    let mut g = rt
+                        .inner
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("runtime busy"))?;
+                    if !child_running(&mut g.client) {
+                        let msg = child_failure(&dir, "rkvm-client");
+                        g.last_error = Some(msg.clone());
+                        ui_log(&dir, &format!("ERROR rkvm-client: {msg}"));
+                        anyhow::bail!(msg);
+                    }
                 }
             }
             let server = state.server.clone().or_else(|| {
