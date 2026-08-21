@@ -105,6 +105,12 @@ case "$1" in
     fi
     setup_uinput
     setup_firewall
+    if [ -f /usr/libexec/nexuskvm/nexuskvm-enable-boot.sh ]; then
+      chmod 0755 /usr/libexec/nexuskvm/nexuskvm-enable-boot.sh || true
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl daemon-reload || true
+    fi
     print_notice "$user"
     ;;
 esac
