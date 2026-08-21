@@ -187,6 +187,9 @@ export default function App() {
           <i /> {rt.service_ok ? 'Service running' : 'Stopped'}
         </div>
       </header>
+      <p className="hint trayHint">
+        ✕ hides to the system tray (service keeps running). Tray → Quit… to exit.
+      </p>
       {(rt.error || msg) && <p className="banner">{rt.error || msg}</p>}
       {rt.needs_logout && (
         <p className="banner">

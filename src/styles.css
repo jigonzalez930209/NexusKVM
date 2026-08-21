@@ -295,6 +295,13 @@ button.side.active {
   font: inherit;
   color: #c5d0e2;
 }
+.trayHint {
+  margin: 0 0 10px;
+  padding: 0 2px;
+  border: 0;
+  color: #7a8699;
+  font-size: 12px;
+}
 .emergency {
   padding: 16px;
   display: flex;
