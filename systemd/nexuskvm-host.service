@@ -1,0 +1,26 @@
+[Unit]
+Description=NexusKVM host daemon (pre-login / GDM)
+Documentation=file:///usr/share/doc/nexuskvm/POSTINSTALL.txt
+After=network-online.target
+Wants=network-online.target
+Before=display-manager.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# Run as root for /dev/input + uinput, but primary group `input` so the
+# desktop user (already in that group) can talk to the control socket.
+Group=input
+UMask=0007
+ExecStart=/usr/libexec/nexuskvm/nexus-kvmd --config /var/lib/nexuskvm/daemon.toml
+Restart=always
+RestartSec=3
+RuntimeDirectory=nexuskvm
+RuntimeDirectoryMode=0770
+ReadWritePaths=/var/lib/nexuskvm /run/nexuskvm
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

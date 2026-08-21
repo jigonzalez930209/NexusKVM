@@ -1,0 +1,20 @@
+[Unit]
+Description=NexusKVM client (pre-login / GDM)
+Documentation=file:///usr/share/doc/nexuskvm/POSTINSTALL.txt
+Wants=network-online.target
+After=network-online.target
+Before=display-manager.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/nexuskvm/rkvm-client /var/lib/nexuskvm/client.toml
+Restart=always
+RestartSec=3
+ReadWritePaths=/var/lib/nexuskvm
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
