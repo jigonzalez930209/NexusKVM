@@ -1,4 +1,6 @@
+mod persist;
 mod runtime;
+mod tray;
 
 use nexus_common::*;
 use runtime::{AppRuntime, Invite, RuntimeSnapshot};
@@ -160,6 +162,8 @@ fn get_peer_side(app: tauri::AppHandle) -> Result<String, String> {
 pub fn run() {
     let runtime = Arc::new(AppRuntime::new());
     let runtime_exit = runtime.clone();
+    let start_hidden = persist::start_hidden_from_args();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(runtime)
@@ -179,21 +183,28 @@ pub fn run() {
             set_peer_side,
             get_peer_side
         ])
-        .setup(|app| {
+        .setup(move |app| {
             let handle = app.handle().clone();
             let rt = (*app.state::<Arc<AppRuntime>>()).clone();
+
+            tray::setup_tray(&handle, rt.clone())?;
+            tray::attach_window_close_handler(&handle);
+
+            if start_hidden {
+                tray::hide_to_tray(&handle);
+            }
+
             tauri::async_runtime::spawn(async move {
                 if runtime::data_dir(&handle).ok().is_some() {
                     let _ = runtime::start(&handle, &rt).await;
+                    tray::ensure_persistence(&handle);
                 }
             });
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("failed to run NexusKVM")
-        .run(move |_app, event| {
-            if let tauri::RunEvent::Exit = event {
-                runtime_exit.shutdown();
-            }
+        .run(move |app, event| {
+            tray::handle_run_event(app, &event, &runtime_exit);
         });
 }
