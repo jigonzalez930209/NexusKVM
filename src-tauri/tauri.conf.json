@@ -45,11 +45,20 @@
     ],
     "linux": {
       "deb": {
-        "depends": ["openssl", "libevdev2", "kmod"],
+        "depends": [
+          "openssl",
+          "libevdev2",
+          "kmod",
+          "pkexec",
+          "libayatana-appindicator3-1"
+        ],
         "files": {
           "/usr/lib/udev/rules.d/70-nexuskvm-uinput.rules": "../udev/70-nexuskvm-desktop.rules",
           "/etc/modules-load.d/nexuskvm-uinput.conf": "../packaging/nexuskvm-uinput.conf",
-          "/usr/share/doc/nexuskvm/POSTINSTALL.txt": "../packaging/POSTINSTALL.txt"
+          "/usr/share/doc/nexuskvm/POSTINSTALL.txt": "../packaging/POSTINSTALL.txt",
+          "/usr/lib/systemd/system/nexuskvm-host.service": "../systemd/nexuskvm-host.service",
+          "/usr/lib/systemd/system/nexuskvm-client.service": "../systemd/nexuskvm-client.service",
+          "/usr/libexec/nexuskvm/nexuskvm-enable-boot.sh": "../scripts/nexuskvm-enable-boot.sh"
         },
         "postInstallScript": "../scripts/deb-postinst.sh"
       }
