@@ -19,12 +19,9 @@ fn autostart_dir() -> Option<PathBuf> {
 }
 
 fn exe_path(app: &AppHandle) -> Option<PathBuf> {
-    std::env::current_exe().ok().or_else(|| {
-        app.path()
-            .resource_dir()
-            .ok()
-            .map(|d| d.join("nexuskvm"))
-    })
+    std::env::current_exe()
+        .ok()
+        .or_else(|| app.path().resource_dir().ok().map(|d| d.join("nexuskvm")))
 }
 
 fn unit_name(role: Role) -> &'static str {
@@ -90,11 +87,7 @@ fn install_autostart(app: &AppHandle, dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn enable_boot_service_once(
-    app: &AppHandle,
-    dir: &Path,
-    state: &SavedState,
-) -> anyhow::Result<()> {
+fn enable_boot_service_once(app: &AppHandle, dir: &Path, state: &SavedState) -> anyhow::Result<()> {
     let unit = unit_name(state.role);
     // Already set up → never ask for a password again on login/start.
     if boot_service_enabled(state.role) || boot_service_active(state.role) {
@@ -112,7 +105,9 @@ fn enable_boot_service_once(
     if let Some(manifest) = option_env!("CARGO_MANIFEST_DIR") {
         scripts.push(Path::new(manifest).join("../scripts/nexuskvm-enable-boot.sh"));
     }
-    scripts.push(PathBuf::from("/usr/libexec/nexuskvm/nexuskvm-enable-boot.sh"));
+    scripts.push(PathBuf::from(
+        "/usr/libexec/nexuskvm/nexuskvm-enable-boot.sh",
+    ));
 
     let Some(script) = scripts.into_iter().find(|p| p.is_file()) else {
         ui_log(dir, "boot persist script not found (optional for GDM)");
@@ -130,10 +125,7 @@ fn enable_boot_service_once(
         _ => {}
     }
 
-    ui_log(
-        dir,
-        "requesting elevation once to enable boot/GDM service…",
-    );
+    ui_log(dir, "requesting elevation once to enable boot/GDM service…");
     let status = Command::new("pkexec")
         .arg(&script)
         .arg(role)

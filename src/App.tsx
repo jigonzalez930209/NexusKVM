@@ -180,7 +180,9 @@ export default function App() {
           </div>
           <div>
             <h1>NexusKVM</h1>
-            <span>{rt.role === 'host' ? 'Host machine' : 'Client machine'}</span>
+            <span>
+              {rt.role === 'host' ? 'Host machine' : 'Client machine'}
+            </span>
           </div>
         </div>
         <div className={'health ' + (rt.service_ok ? 'on' : 'off')}>
@@ -188,7 +190,8 @@ export default function App() {
         </div>
       </header>
       <p className="hint trayHint">
-        ✕ hides to the system tray (service keeps running). Tray → Quit… to exit.
+        ✕ hides to the system tray (service keeps running). Tray → Quit… to
+        exit.
       </p>
       {(rt.error || msg) && <p className="banner">{rt.error || msg}</p>}
       {rt.needs_logout && (
@@ -379,7 +382,9 @@ export default function App() {
               </div>
               <p className="hint">
                 Fallback hotkey:{' '}
-                <kbd>{status?.emergency_shortcut ?? 'Left Alt + Left Ctrl'}</kbd>
+                <kbd>
+                  {status?.emergency_shortcut ?? 'Left Alt + Left Ctrl'}
+                </kbd>
               </p>
             </div>
           </article>

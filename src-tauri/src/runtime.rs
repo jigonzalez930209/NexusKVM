@@ -593,12 +593,8 @@ pub async fn snapshot(app: &AppHandle, rt: &AppRuntime) -> RuntimeSnapshot {
         false
     };
     let service_ok = match role {
-        Some(Role::Host) => {
-            sock || daemon_alive || crate::persist::boot_service_active(Role::Host)
-        }
-        Some(Role::Client) => {
-            client_alive || crate::persist::boot_service_active(Role::Client)
-        }
+        Some(Role::Host) => sock || daemon_alive || crate::persist::boot_service_active(Role::Host),
+        Some(Role::Client) => client_alive || crate::persist::boot_service_active(Role::Client),
         None => false,
     };
     let running = service_ok;
@@ -628,10 +624,7 @@ pub async fn snapshot(app: &AppHandle, rt: &AppRuntime) -> RuntimeSnapshot {
         .or_else(|| agent_st.as_ref().map(|a| a.portal_available))
         .unwrap_or(false);
     let portal_error = agent_st.as_ref().and_then(|a| a.portal_error.clone());
-    let clipboard_ok = agent_st
-        .as_ref()
-        .map(|a| a.clipboard_ok)
-        .unwrap_or(false);
+    let clipboard_ok = agent_st.as_ref().map(|a| a.clipboard_ok).unwrap_or(false);
     RuntimeSnapshot {
         role,
         running,
@@ -873,13 +866,15 @@ pub async fn start(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
                 }
             }
             let server = state.server.clone().or_else(|| {
-                fs::read_to_string(client_config_path(&dir)).ok().and_then(|t| {
-                    t.lines().find_map(|l| {
-                        let rest = l.trim().strip_prefix("server")?;
-                        let rest = rest.trim().strip_prefix('=')?.trim();
-                        Some(rest.trim_matches('"').to_string())
+                fs::read_to_string(client_config_path(&dir))
+                    .ok()
+                    .and_then(|t| {
+                        t.lines().find_map(|l| {
+                            let rest = l.trim().strip_prefix("server")?;
+                            let rest = rest.trim().strip_prefix('=')?.trim();
+                            Some(rest.trim_matches('"').to_string())
+                        })
                     })
-                })
             });
             // Return layout: host on the left by default.
             if !layout_store::layout_path(&dir).is_file() {
@@ -905,8 +900,8 @@ pub fn invite(app: &AppHandle) -> anyhow::Result<Invite> {
     let dir = data_dir(app)?;
     let password = fs::read_to_string(password_path(&dir))
         .map_err(|_| anyhow::anyhow!("no password; configure this machine as host"))?;
-    let certificate = fs::read_to_string(cert_path(&dir))
-        .map_err(|_| anyhow::anyhow!("no certificate yet"))?;
+    let certificate =
+        fs::read_to_string(cert_path(&dir)).map_err(|_| anyhow::anyhow!("no certificate yet"))?;
     Ok(Invite {
         server: advertise(),
         password: password.trim().into(),

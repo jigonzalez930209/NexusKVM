@@ -1,4 +1,4 @@
-use crate::{Barrier, DisplayNode, Edge, Layout, LOCAL_TARGET, PeerId};
+use crate::{Barrier, DisplayNode, Edge, Layout, PeerId, LOCAL_TARGET};
 use serde::{Deserialize, Serialize};
 
 /// Preferred side of the remote peer relative to this machine.
@@ -56,10 +56,7 @@ impl LayoutFile {
     }
 
     pub fn with_side(mut self, side: PeerSide) -> Self {
-        let remote = self
-            .remote_peer
-            .clone()
-            .unwrap_or_else(|| "peer".into());
+        let remote = self.remote_peer.clone().unwrap_or_else(|| "peer".into());
         self.peer_side = side;
         self.layout = two_node_layout(LOCAL_TARGET, &remote, side);
         self.remote_peer = Some(remote);

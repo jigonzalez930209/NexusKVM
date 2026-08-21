@@ -114,14 +114,15 @@ impl PortalBackend {
         self.events = None;
         if let Some(live) = self.live.take() {
             let g = live.lock().await;
-            let _ = g.input_capture.disable(&g.session, Default::default()).await;
+            let _ = g
+                .input_capture
+                .disable(&g.session, Default::default())
+                .await;
             let _ = g.session.close().await;
         }
     }
 
-    async fn start_session(
-        ic: &InputCapture,
-    ) -> Result<ashpd::desktop::Session<InputCapture>> {
+    async fn start_session(ic: &InputCapture) -> Result<ashpd::desktop::Session<InputCapture>> {
         let capabilities = Capabilities::Keyboard | Capabilities::Pointer;
         match ic.create_session2(Default::default()).await {
             Ok(session) => {
@@ -281,9 +282,7 @@ impl EdgeCaptureBackend for PortalBackend {
         }
         self.shutdown_session().await;
 
-        let ic = InputCapture::new()
-            .await
-            .context("InputCapture::new")?;
+        let ic = InputCapture::new().await.context("InputCapture::new")?;
         let session = Self::start_session(&ic).await?;
         let zones = ic
             .zones(&session, Default::default())
@@ -361,9 +360,7 @@ impl EdgeCaptureBackend for PortalBackend {
         let live_h = live.clone();
 
         // Separate proxy only for signals (same bus).
-        let signal_ic = InputCapture::new()
-            .await
-            .context("InputCapture signals")?;
+        let signal_ic = InputCapture::new().await.context("InputCapture signals")?;
 
         tokio::spawn(async move {
             let mut activated = match signal_ic.receive_activated().await {

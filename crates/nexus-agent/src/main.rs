@@ -7,13 +7,8 @@ use nexus_agent::{
     layout_store::{self, AgentStatusFile},
     peer_channel::{self, PeerMessage, CONTROL_PORT},
 };
-use nexus_common::{ControlCommand, LayoutFile, LOCAL_TARGET, PeerSide, PeerStatus};
-use std::{
-    net::SocketAddr,
-    path::PathBuf,
-    sync::Arc,
-    time::Duration,
-};
+use nexus_common::{ControlCommand, LayoutFile, PeerSide, PeerStatus, LOCAL_TARGET};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use tracing::{info, warn};
 
 #[derive(Clone, Copy, ValueEnum)]
