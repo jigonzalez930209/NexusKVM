@@ -26,7 +26,7 @@ The InputCapture/EIS portal for Wayland edges still needs the wiring described i
 2. **Copy pairing code**.
 3. On the other PC, open NexusKVM → **Connect to another** and paste the code.
 
-The app creates certificates, configures TLS, and starts `nexus-kvmd` or `rkvm-client` on its own. You need `openssl` and, for input capture, membership in the `input` group (or permissions on `/dev/uinput`).
+The app creates certificates, configures TLS, and starts `nexus-kvmd` or `rkvm-client` on its own. Closing the window sends the app to the **system tray** (service keeps running). Use tray → **Quit…** to exit. After pairing, the app can enable a system service (password prompt once) so the role stays active at the GDM login screen. You need `openssl` and, for input capture, membership in the `input` group (or permissions on `/dev/uinput`).
 
 ## Quick development
 
@@ -38,7 +38,7 @@ npm test
 npm run tauri dev
 ```
 
-`tauri dev` builds `nexus-kvmd`, `nexus-agent`, and `rkvm-client` before opening the UI. You need `libevdev-dev` (or a `libevdev.pc` in `~/.local/pkgconfig` if only the runtime package is installed). The openssl `++++` when generating certificates should not appear in the console.
+`tauri dev` builds `nexus-kvmd`, `nexus-agent`, and `rkvm-client` before opening the UI. You need `libevdev-dev` (or a `libevdev.pc` in `~/.local/pkgconfig` if only the runtime package is installed). For `npm run package:linux`, install `libayatana-appindicator3-1` (tray); `libayatana-appindicator3-dev` is preferred, otherwise the packaging script synthesizes a stub `.pc`. The openssl `++++` when generating certificates should not appear in the console.
 
 ## Security
 

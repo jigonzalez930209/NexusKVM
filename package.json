@@ -10,7 +10,7 @@
     "format": "prettier --write src/**/*.{ts,tsx,css} index.html vite.config.ts package.json tsconfig.json",
     "format:check": "prettier --check src/**/*.{ts,tsx,css} index.html vite.config.ts package.json tsconfig.json",
     "tauri": "tauri",
-    "package:linux": "tauri build --bundles deb"
+    "package:linux": "bash scripts/package-linux.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
