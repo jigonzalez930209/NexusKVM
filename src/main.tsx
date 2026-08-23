@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import App from './App';
+import { EdgePortal } from './components/EdgePortal';
 import { TrayControlCenter } from './components/TrayControlCenter';
 import { inTauri } from './api';
 import { Toaster } from './components/ui/Toaster';
@@ -9,6 +10,7 @@ import './styles.css';
 
 function Root() {
   const [label, setLabel] = useState<string>(() => {
+    if (window.location.hash.includes('portal')) return 'edge-portal';
     if (window.location.hash.includes('tray')) return 'tray-panel';
     if (inTauri()) {
       try {
@@ -32,6 +34,10 @@ function Root() {
       }
     }
   }, [label]);
+
+  if (label === 'edge-portal') {
+    return <EdgePortal />;
+  }
 
   return (
     <>

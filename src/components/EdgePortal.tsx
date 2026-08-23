@@ -3,21 +3,26 @@ import { api, inTauri } from '../api';
 
 export function EdgePortal() {
   const [isArmed, setIsArmed] = useState(true);
+  const [side, setSide] = useState<string>('right');
   const lastTriggerRef = useRef<number>(0);
 
   useEffect(() => {
-    document.documentElement.classList.add('transparent-window');
-    document.body.classList.add('transparent-window');
+    document.documentElement.classList.add('edge-portal-root');
+    document.body.classList.add('edge-portal-root');
     document.documentElement.style.backgroundColor = 'transparent';
     document.body.style.backgroundColor = 'transparent';
 
     if (inTauri()) {
+      api
+        .getPeerSide()
+        .then((s) => setSide(s))
+        .catch(() => {});
       api.positionEdgePortal().catch(() => {});
     }
 
     return () => {
-      document.documentElement.classList.remove('transparent-window');
-      document.body.classList.remove('transparent-window');
+      document.documentElement.classList.remove('edge-portal-root');
+      document.body.classList.remove('edge-portal-root');
     };
   }, []);
 
@@ -31,19 +36,17 @@ export function EdgePortal() {
     lastTriggerRef.current = now;
     setIsArmed(false);
 
-    // Determine normalized position along the dominant axis
+    // Determine normalized position along the active axis
     let normalized = 0.5;
-    if (window.innerHeight > window.innerWidth) {
-      // Vertical strip (Left/Right edge): normalized Y
-      normalized = Math.max(
-        0.0,
-        Math.min(1.0, e.clientY / (window.innerHeight || 1)),
-      );
-    } else {
-      // Horizontal strip (Top/Bottom edge): normalized X
+    if (side === 'top' || side === 'bottom') {
       normalized = Math.max(
         0.0,
         Math.min(1.0, e.clientX / (window.innerWidth || 1)),
+      );
+    } else {
+      normalized = Math.max(
+        0.0,
+        Math.min(1.0, e.clientY / (window.innerHeight || 1)),
       );
     }
 
@@ -57,22 +60,39 @@ export function EdgePortal() {
   }
 
   function handleMouseLeave() {
-    // When the cursor leaves the 2px strip, re-arm the sensor
+    // When the cursor leaves the strip, re-arm the sensor
     setIsArmed(true);
   }
 
+  // Exact 1-pixel red indicator strip pinned to the screen border
+  const lineStyle: React.CSSProperties = {
+    position: 'absolute',
+    backgroundColor: 'blue',
+    pointerEvents: 'none',
+    zIndex: 99999,
+    ...(side === 'left'
+      ? { left: 0, top: 0, width: '1px', height: '100%' }
+      : side === 'top'
+        ? { left: 0, top: 0, width: '100%', height: '1px' }
+        : side === 'bottom'
+          ? { left: 0, bottom: 0, width: '100%', height: '1px' }
+          : { right: 0, top: 0, width: '1px', height: '100%' }),
+  };
+
   return (
     <div
-      className="w-full h-full bg-transparent select-none cursor-default overflow-hidden pointer-events-auto"
+      className="relative w-full h-full select-none cursor-default overflow-hidden pointer-events-auto"
       style={{
         width: '100vw',
         height: '100vh',
-        backgroundColor: 'transparent',
+        backgroundColor: 'red',
         userSelect: 'none',
       }}
       onMouseEnter={handleTrigger}
       onMouseMove={handleTrigger}
       onMouseLeave={handleMouseLeave}
-    />
+    >
+      <div style={lineStyle} />
+    </div>
   );
 }

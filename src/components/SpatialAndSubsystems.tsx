@@ -60,7 +60,7 @@ export function SpatialMatrix({
       <div className="edge-selector-bar">
         <span>Transition Edge:</span>
         <div className="edge-btn-group">
-          {(['left', 'right', 'top', 'bottom'] as const).map((side) => (
+          {(['left', 'right', 'bottom'] as const).map((side) => (
             <button
               key={side}
               className={`edge-btn ${(peerSide ?? 'right') === side ? 'active' : ''}`}

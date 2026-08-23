@@ -116,6 +116,16 @@ body,
   user-select: none;
 }
 
+html.transparent-window,
+body.transparent-window,
+.transparent-window #root,
+html.edge-portal-root,
+body.edge-portal-root,
+.edge-portal-root #root {
+  background-color: transparent !important;
+  background: transparent !important;
+}
+
 /* Scrollbars inside designated scrollable containers */
 ::-webkit-scrollbar {
   width: 6px;
