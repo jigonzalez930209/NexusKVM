@@ -1,39 +1,17 @@
 use crate::persist;
 use crate::runtime::{self, AppRuntime};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
-use tauri::{
-    menu::{Menu, MenuItem},
-    tray::{TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, RunEvent, WindowEvent,
-};
-
-/// When true, the next exit is allowed (Quit confirmed).
-static ALLOW_EXIT: AtomicBool = AtomicBool::new(false);
-
-pub fn allow_exit() {
-    ALLOW_EXIT.store(true, Ordering::SeqCst);
-}
-
-pub fn exit_allowed() -> bool {
-    ALLOW_EXIT.load(Ordering::SeqCst)
-}
-
-pub fn show_main_window(app: &AppHandle) {
-    if let Some(win) = app.get_webview_window("main") {
-        let _ = win.show();
-        let _ = win.unminimize();
-        let _ = win.set_focus();
-    }
-}
-
-pub fn hide_to_tray(app: &AppHandle) {
-    if let Some(win) = app.get_webview_window("main") {
-        let _ = win.hide();
-    }
-}
+use crate::state::AppLifecycleState;
+#[cfg(not(target_os = "linux"))]
+use crate::window_labels::MAIN_TRAY_ID;
+use crate::windows;
+#[cfg(not(target_os = "linux"))]
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+#[cfg(not(target_os = "linux"))]
+use tauri::menu::{Menu, MenuItem};
+#[cfg(not(target_os = "linux"))]
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Manager, RunEvent};
 
 /// Confirm quit. Returns true if the user accepted stopping the service and exiting.
 pub fn confirm_quit() -> bool {
@@ -64,39 +42,63 @@ pub fn quit_app(app: &AppHandle, rt: &AppRuntime) {
             .stderr(std::process::Stdio::null())
             .status();
     }
-    allow_exit();
+
+    let state = app.state::<AppLifecycleState>();
+    state.quitting.store(true, Ordering::SeqCst);
     app.exit(0);
 }
 
-pub fn setup_tray(app: &AppHandle, rt: Arc<AppRuntime>) -> tauri::Result<()> {
-    let show_i = MenuItem::with_id(app, "show", "Show NexusKVM", true, None::<&str>)?;
-    let quit_i = MenuItem::with_id(app, "quit", "Quit…", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
+/// GTK/appindicator tray. Not used on Linux (see linux_tray.rs): the
+/// libappindicator backend cannot deliver icon click events.
+#[cfg(not(target_os = "linux"))]
+pub fn create_tray(app: &mut tauri::App, rt: Arc<AppRuntime>) -> tauri::Result<()> {
+    let handle = app.handle();
+    let panel_i = MenuItem::with_id(
+        handle,
+        "open_tray",
+        "Open Quick Panel",
+        true,
+        None::<&str>,
+    )?;
+    let show_i = MenuItem::with_id(handle, "show", "Open Main Window", true, None::<&str>)?;
+    let quit_i = MenuItem::with_id(handle, "quit", "Quit NexusKVM", true, None::<&str>)?;
+    let menu = Menu::with_items(handle, &[&panel_i, &show_i, &quit_i])?;
 
-    let icon = app
-        .default_window_icon()
-        .cloned()
-        .ok_or_else(|| tauri::Error::WindowNotFound)?;
+    let icon = match app.default_window_icon() {
+        Some(i) => i.clone(),
+        None => tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))
+            .unwrap_or_else(|_| panic!("Failed to load tray icon")),
+    };
 
     let rt_menu = rt.clone();
-    let _tray = TrayIconBuilder::with_id("nexuskvm")
+    let builder = TrayIconBuilder::with_id(MAIN_TRAY_ID)
         .icon(icon)
         .menu(&menu)
-        .tooltip("NexusKVM")
-        .on_menu_event(move |app, event| match event.id.as_ref() {
-            "show" => show_main_window(app),
-            "quit" => quit_app(app, &rt_menu),
+        .tooltip("NexusKVM — Spatial KVM")
+        .show_menu_on_left_click(false);
+
+    builder
+        .on_menu_event(move |app_handle, event| match event.id.as_ref() {
+            "open_tray" => {
+                let _ = windows::toggle_tray_panel(app_handle);
+            }
+            "show" => {
+                let _ = windows::open_main_window(app_handle);
+            }
+            "quit" => quit_app(app_handle, &rt_menu),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
-            // Linux StatusNotifier often only supports the menu; still handle clicks where available.
+            tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
+            // Toggle strictly on release: matching Down+Up fired the toggle
+            // twice per click (show→hide instantly).
             if let TrayIconEvent::Click {
-                button: tauri::tray::MouseButton::Left,
-                button_state: tauri::tray::MouseButtonState::Up,
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
                 ..
             } = event
             {
-                show_main_window(tray.app_handle());
+                let _ = windows::toggle_tray_panel(tray.app_handle());
             }
         })
         .build(app)?;
@@ -104,30 +106,18 @@ pub fn setup_tray(app: &AppHandle, rt: Arc<AppRuntime>) -> tauri::Result<()> {
     Ok(())
 }
 
-pub fn attach_window_close_handler(app: &AppHandle) {
-    if let Some(win) = app.get_webview_window("main") {
-        let handle = app.clone();
-        win.on_window_event(move |event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                hide_to_tray(&handle);
-            }
-        });
-    }
-}
-
 pub fn handle_run_event(app: &AppHandle, event: &RunEvent, rt: &AppRuntime) {
     match event {
         RunEvent::ExitRequested { api, .. } => {
-            if !exit_allowed() {
+            let state = app.state::<AppLifecycleState>();
+            let quitting = state.quitting.load(Ordering::SeqCst);
+            if !quitting {
                 api.prevent_exit();
-                hide_to_tray(app);
+                let _ = windows::hide_main_window(app);
             }
         }
         RunEvent::Exit => {
-            if exit_allowed() {
-                rt.shutdown();
-            }
+            rt.shutdown();
         }
         _ => {}
     }
@@ -135,7 +125,6 @@ pub fn handle_run_event(app: &AppHandle, event: &RunEvent, rt: &AppRuntime) {
 
 pub fn ensure_persistence(app: &AppHandle) {
     if let Ok(dir) = runtime::data_dir(app) {
-        // Autostart only — never pkexec on every login.
         let _ = persist::ensure_session_persistence(app, &dir);
     }
 }
