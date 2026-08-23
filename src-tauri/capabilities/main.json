@@ -1,14 +1,18 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "default",
-  "description": "Minimal capabilities for the main window",
+  "identifier": "main-capability",
+  "description": "Permissions for the main NexusKVM window",
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "core:window:default",
     "core:window:allow-hide",
     "core:window:allow-show",
     "core:window:allow-set-focus",
     "core:window:allow-unminimize",
+    "core:window:allow-maximize",
+    "core:window:allow-minimize",
+    "core:window:allow-start-dragging",
     "shell:allow-open"
   ]
 }
