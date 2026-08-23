@@ -4,8 +4,30 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1.0" />
     <title>NexusKVM</title>
+    <style>
+      html {
+        font-size: 14px;
+      }
+      body {
+        font-family: 'Geist', sans-serif;
+        background: transparent;
+      }
+      ::-webkit-scrollbar {
+        width: 4px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #27272a;
+        border-radius: 4px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #52525b;
+      }
+    </style>
   </head>
-  <body>
+  <body class="dark bg-transparent">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
