@@ -14,7 +14,15 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::CString;
 use std::io::{self, ErrorKind};
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+/// Shared registry of per-peer round-trip times in milliseconds, keyed by peer id.
+pub type PeerLatencies = Arc<Mutex<HashMap<String, u32>>>;
+
+pub fn new_peer_latencies() -> PeerLatencies {
+    Arc::new(Mutex::new(HashMap::new()))
+}
 use thiserror::Error;
 use tokio::io::{AsyncWriteExt, BufStream};
 use tokio::net::{TcpListener, TcpStream};
@@ -48,6 +56,7 @@ pub async fn run(
     switch_keys: &HashSet<Key>,
     propagate_switch_keys: bool,
     mut control: TargetControl,
+    latencies: PeerLatencies,
 ) -> Result<(), Error> {
     let listener = TcpListener::bind(&listen).await.map_err(Error::Network)?;
     tracing::info!("Listening on {}", listen);
@@ -81,7 +90,7 @@ pub async fn run(
                 let acceptor = acceptor.clone();
                 let password = password.to_owned();
 
-                prune_clients(&mut clients, &mut router);
+                prune_clients(&mut clients, &mut router, &latencies);
                 control.publish(router.snapshot());
 
                 let init_updates = devices
@@ -106,19 +115,31 @@ pub async fn run(
                 clients.insert(ClientSlot {
                     sender,
                     addr,
-                    id,
+                    id: id.clone(),
                 });
                 control.publish(router.snapshot());
 
                 let span = tracing::info_span!("connection", addr = %addr);
+                let client_latencies = latencies.clone();
                 tokio::spawn(
                     async move {
                         tracing::info!("Connected");
 
-                        match client(init_updates, receiver, stream, acceptor, &password).await {
+                        match client(
+                            init_updates,
+                            receiver,
+                            stream,
+                            acceptor,
+                            &password,
+                            &id,
+                            client_latencies.clone(),
+                        )
+                        .await
+                        {
                             Ok(()) => tracing::info!("Disconnected"),
                             Err(err) => tracing::error!("Disconnected: {}", err),
                         }
+                        client_latencies.lock().unwrap().remove(&id);
                     }
                     .instrument(span),
                 );
@@ -268,7 +289,11 @@ fn peer_id(addr: SocketAddr) -> String {
     addr.to_string()
 }
 
-fn prune_clients(clients: &mut Slab<ClientSlot>, router: &mut TargetRouter) {
+fn prune_clients(
+    clients: &mut Slab<ClientSlot>,
+    router: &mut TargetRouter,
+    latencies: &PeerLatencies,
+) {
     let mut dead = Vec::new();
     clients.retain(|_, client| {
         if client.sender.is_closed() {
@@ -280,6 +305,7 @@ fn prune_clients(clients: &mut Slab<ClientSlot>, router: &mut TargetRouter) {
     });
     for id in dead {
         router.remove_peer(&id);
+        latencies.lock().unwrap().remove(&id);
     }
 }
 
@@ -396,6 +422,8 @@ async fn client(
     stream: TcpStream,
     acceptor: TlsAcceptor,
     password: &str,
+    id: &str,
+    latencies: PeerLatencies,
 ) -> Result<(), ClientError> {
     let stream = rkvm_net::timeout(rkvm_net::TLS_TIMEOUT, acceptor.accept(stream)).await?;
     tracing::info!("TLS connected");
@@ -479,6 +507,10 @@ async fn client(
                 result?;
                 let duration = ping_sent_at.elapsed();
                 tracing::debug!(duration = ?duration, "Received pong");
+                latencies
+                    .lock()
+                    .unwrap()
+                    .insert(id.to_string(), duration.as_millis().min(u32::MAX as u128) as u32);
                 awaiting_pong = false;
                 continue;
             }

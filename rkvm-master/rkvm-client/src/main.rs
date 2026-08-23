@@ -31,9 +31,18 @@ async fn main() -> ExitCode {
 
     subscriber::set_global_default(registry).unwrap();
 
-    match rkvm_input::priority::raise_cpu() {
-        Ok(nice) => tracing::info!(nice, "CPU priority raised"),
-        Err(err) => tracing::warn!(%err, "failed to raise CPU priority"),
+    let boost = rkvm_input::priority::boost_cpu();
+    match boost.rt_prio {
+        Some(prio) => tracing::info!(
+            prio,
+            memlocked = boost.memlocked,
+            "SCHED_FIFO realtime scheduling active (kernel-level input latency)"
+        ),
+        None => tracing::info!(
+            nice = boost.nice,
+            memlocked = boost.memlocked,
+            "realtime unavailable; raised CPU priority via nice"
+        ),
     }
 
     let args = Args::parse();

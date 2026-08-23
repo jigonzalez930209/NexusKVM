@@ -34,9 +34,18 @@ async fn main() -> ExitCode {
 
     subscriber::set_global_default(registry).unwrap();
 
-    match rkvm_input::priority::raise_cpu() {
-        Ok(nice) => tracing::info!(nice, "CPU priority raised"),
-        Err(err) => tracing::warn!(%err, "failed to raise CPU priority"),
+    let boost = rkvm_input::priority::boost_cpu();
+    match boost.rt_prio {
+        Some(prio) => tracing::info!(
+            prio,
+            memlocked = boost.memlocked,
+            "SCHED_FIFO realtime scheduling active (kernel-level input latency)"
+        ),
+        None => tracing::info!(
+            nice = boost.nice,
+            memlocked = boost.memlocked,
+            "realtime unavailable; raised CPU priority via nice"
+        ),
     }
 
     let args = Args::parse();
@@ -74,9 +83,10 @@ async fn main() -> ExitCode {
     let switch_keys = config.switch_keys.into_iter().map(Into::into).collect();
     let propagate_switch_keys = config.propagate_switch_keys.unwrap_or(true);
     let (_handle, control) = target::control_pair();
+    let latencies = server::new_peer_latencies();
 
     tokio::select! {
-        result = server::run(config.listen, acceptor, &config.password, &switch_keys, propagate_switch_keys, control) => {
+        result = server::run(config.listen, acceptor, &config.password, &switch_keys, propagate_switch_keys, control, latencies) => {
             if let Err(err) = result {
                 tracing::error!("Error: {}", err);
                 return ExitCode::FAILURE;
