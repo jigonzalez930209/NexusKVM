@@ -123,11 +123,11 @@ fn tray_icon_pixmap() -> Vec<Icon> {
     let (w, h) = (img.width() as i32, img.height() as i32);
     let rgba = img.rgba();
     let mut argb = Vec::with_capacity(rgba.len());
-    for px in rgba.chunks_exact(4) {
-        argb.push(px[3]); // A
-        argb.push(px[0]); // R
-        argb.push(px[1]); // G
-        argb.push(px[2]); // B
+    for &[r, g, b, a] in rgba.as_chunks::<4>().0 {
+        argb.push(a);
+        argb.push(r);
+        argb.push(g);
+        argb.push(b);
     }
     vec![Icon {
         width: w,
