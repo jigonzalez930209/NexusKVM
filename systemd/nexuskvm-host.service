@@ -15,6 +15,11 @@ UMask=0007
 ExecStart=/usr/libexec/nexuskvm/nexus-kvmd --config /var/lib/nexuskvm/daemon.toml
 Restart=always
 RestartSec=3
+# Kernel-level latency controls for the input path: allow the binary's
+# SCHED_FIFO request and mlockall() to succeed.
+LimitRTPRIO=90
+LimitNICE=-20
+LimitMEMLOCK=infinity
 RuntimeDirectory=nexuskvm
 RuntimeDirectoryMode=0770
 ReadWritePaths=/var/lib/nexuskvm /run/nexuskvm

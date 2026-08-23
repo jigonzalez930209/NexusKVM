@@ -11,6 +11,11 @@ Type=simple
 ExecStart=/usr/libexec/nexuskvm/rkvm-client /var/lib/nexuskvm/client.toml
 Restart=always
 RestartSec=3
+# Kernel-level latency controls for the input path: allow the binary's
+# SCHED_FIFO request and mlockall() to succeed.
+LimitRTPRIO=90
+LimitNICE=-20
+LimitMEMLOCK=infinity
 ReadWritePaths=/var/lib/nexuskvm
 NoNewPrivileges=true
 ProtectSystem=strict
