@@ -40,6 +40,15 @@ export interface RuntimeSnapshot {
   portal_available: boolean;
   portal_error: string | null;
   clipboard_ok: boolean;
+  metrics: ServiceMetrics;
 }
 
 export type PeerSide = 'left' | 'right' | 'top' | 'bottom';
+
+export interface ServiceMetrics {
+  pid: number | null;
+  service: string | null;
+  cpu_percent: number;
+  mem_mb: number;
+  uptime_secs: number;
+}
