@@ -9,4 +9,6 @@
 .DS_Store
 dist
 cache
+docs/.vitepress/dist
+docs/.vitepress/cache
 
