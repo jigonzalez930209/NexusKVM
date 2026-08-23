@@ -1,9 +1,15 @@
+mod linux_tray;
+mod metrics;
 mod persist;
 mod runtime;
+mod state;
 mod tray;
+mod window_labels;
+mod windows;
 
 use nexus_common::*;
 use runtime::{AppRuntime, Invite, RuntimeSnapshot};
+use state::AppLifecycleState;
 use std::sync::Arc;
 use tauri::{Manager, State};
 
@@ -22,6 +28,77 @@ async fn status_from(r: ControlResponse) -> Result<AppStatus, String> {
 #[tauri::command]
 fn open_logs(app: tauri::AppHandle) -> Result<String, String> {
     runtime::open_logs(&app).map_err(map_err)
+}
+
+#[tauri::command]
+fn start_dragging(window: tauri::Window) {
+    // Drag the calling window (main OR tray-panel topbar).
+    let _ = window.start_dragging();
+}
+
+#[tauri::command]
+fn hide_window(app: tauri::AppHandle) {
+    let _ = windows::hide_main_window(&app);
+}
+
+#[tauri::command]
+fn minimize_window(app: tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window(window_labels::MAIN_WINDOW) {
+        let _ = win.minimize();
+    }
+}
+
+#[tauri::command]
+fn toggle_maximize(app: tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window(window_labels::MAIN_WINDOW) {
+        if let Ok(is_max) = win.is_maximized() {
+            if is_max {
+                let _ = win.unmaximize();
+            } else {
+                let _ = win.maximize();
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn position_tray_panel(app: tauri::AppHandle) {
+    let _ = windows::position_tray_panel(&app);
+}
+
+#[tauri::command]
+fn toggle_tray_panel(app: tauri::AppHandle) {
+    let _ = windows::toggle_tray_panel(&app);
+}
+
+#[tauri::command]
+fn toggle_tray_window(app: tauri::AppHandle) {
+    let _ = windows::toggle_tray_panel(&app);
+}
+
+#[tauri::command]
+fn open_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    windows::open_main_window(&app)
+}
+
+#[tauri::command]
+fn show_main_window_cmd(app: tauri::AppHandle) {
+    let _ = windows::open_main_window(&app);
+}
+
+#[tauri::command]
+fn hide_tray_panel(app: tauri::AppHandle) {
+    let _ = windows::hide_tray_panel(&app);
+}
+
+#[tauri::command]
+fn hide_tray_window(app: tauri::AppHandle) {
+    let _ = windows::hide_tray_panel(&app);
+}
+
+#[tauri::command]
+fn quit_app_cmd(app: tauri::AppHandle, rt: State<'_, Arc<AppRuntime>>) {
+    tray::quit_app(&app, &rt);
 }
 
 #[tauri::command]
@@ -95,17 +172,31 @@ async fn daemon_status() -> Result<AppStatus, String> {
 }
 
 #[tauri::command]
-async fn switch_target(target: String) -> Result<AppStatus, String> {
+async fn switch_target(
+    app: tauri::AppHandle,
+    target: String,
+) -> Result<AppStatus, String> {
+    // Use the edge configured in the stored layout so the cursor enters the
+    // remote screen where the user placed it, not a hardcoded side.
+    let entry = runtime::get_layout(&app)
+        .map(|f| EntryPoint {
+            edge: match f.peer_side {
+                PeerSide::Left => Edge::Left,
+                PeerSide::Right => Edge::Right,
+                PeerSide::Top => Edge::Top,
+                PeerSide::Bottom => Edge::Bottom,
+            },
+            normalized_position: 0.5,
+            inset_px: 6,
+        })
+        .unwrap_or(EntryPoint {
+            edge: Edge::Right,
+            normalized_position: 0.5,
+            inset_px: 6,
+        });
     status_from(
         runtime::control_client()
-            .send(ControlCommand::Switch {
-                target,
-                entry: Some(EntryPoint {
-                    edge: Edge::Left,
-                    normalized_position: 0.5,
-                    inset_px: 6,
-                }),
-            })
+            .send(ControlCommand::Switch { target, entry: Some(entry) })
             .await
             .map_err(map_err)?,
     )
@@ -160,15 +251,34 @@ fn get_peer_side(app: tauri::AppHandle) -> Result<String, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    {
+        std::env::set_var("GDK_BACKEND", "x11");
+    }
+
     let runtime = Arc::new(AppRuntime::new());
     let runtime_exit = runtime.clone();
     let start_hidden = persist::start_hidden_from_args();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_positioner::init())
+        .manage(AppLifecycleState::default())
         .manage(runtime)
         .invoke_handler(tauri::generate_handler![
             open_logs,
+            start_dragging,
+            hide_window,
+            minimize_window,
+            toggle_maximize,
+            position_tray_panel,
+            toggle_tray_panel,
+            toggle_tray_window,
+            open_main_window,
+            show_main_window_cmd,
+            hide_tray_panel,
+            hide_tray_window,
+            quit_app_cmd,
             runtime_status,
             setup_as_host,
             setup_as_client,
@@ -187,11 +297,17 @@ pub fn run() {
             let handle = app.handle().clone();
             let rt = (*app.state::<Arc<AppRuntime>>()).clone();
 
-            tray::setup_tray(&handle, rt.clone())?;
-            tray::attach_window_close_handler(&handle);
+            // Linux: ksni SNI tray (libappindicator can't deliver clicks).
+            #[cfg(target_os = "linux")]
+            linux_tray::create_tray(app, rt.clone())?;
+            #[cfg(not(target_os = "linux"))]
+            tray::create_tray(app, rt.clone())?;
+
+            windows::configure_main_window(app)?;
+            windows::configure_tray_panel(app)?;
 
             if start_hidden {
-                tray::hide_to_tray(&handle);
+                let _ = windows::hide_main_window(&handle);
             }
 
             tauri::async_runtime::spawn(async move {
