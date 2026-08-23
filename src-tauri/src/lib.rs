@@ -230,12 +230,14 @@ async fn release_all() -> Result<(), String> {
 #[tauri::command]
 fn set_peer_side(app: tauri::AppHandle, side: String) -> Result<String, String> {
     let file = runtime::set_peer_side(&app, &side).map_err(map_err)?;
-    Ok(match file.peer_side {
-        PeerSide::Left => "left".into(),
-        PeerSide::Right => "right".into(),
-        PeerSide::Top => "top".into(),
-        PeerSide::Bottom => "bottom".into(),
-    })
+    let side_str = match file.peer_side {
+        PeerSide::Left => "left",
+        PeerSide::Right => "right",
+        PeerSide::Top => "top",
+        PeerSide::Bottom => "bottom",
+    };
+    let _ = windows::position_edge_portal(&app, Some(side_str));
+    Ok(side_str.into())
 }
 
 #[tauri::command]
@@ -247,6 +249,75 @@ fn get_peer_side(app: tauri::AppHandle) -> Result<String, String> {
         PeerSide::Top => "top".into(),
         PeerSide::Bottom => "bottom".into(),
     })
+}
+
+#[tauri::command]
+async fn switch_edge(
+    app: tauri::AppHandle,
+    normalized_position: f32,
+) -> Result<AppStatus, String> {
+    let layout = runtime::get_layout(&app).map_err(map_err)?;
+    let is_client = runtime::data_dir(&app)
+        .ok()
+        .and_then(|d| runtime::load_state(&d))
+        .map(|s| s.role == runtime::Role::Client)
+        .unwrap_or(false);
+
+    if is_client {
+        status_from(
+            runtime::control_client()
+                .send(ControlCommand::Local)
+                .await
+                .map_err(map_err)?,
+        )
+        .await
+    } else {
+        let remote_target = layout.remote_peer.clone().unwrap_or_else(|| "peer".into());
+        let entry = EntryPoint {
+            edge: match layout.peer_side {
+                PeerSide::Left => Edge::Left,
+                PeerSide::Right => Edge::Right,
+                PeerSide::Top => Edge::Top,
+                PeerSide::Bottom => Edge::Bottom,
+            },
+            normalized_position: normalized_position.clamp(0.0, 1.0),
+            inset_px: 6,
+        };
+        status_from(
+            runtime::control_client()
+                .send(ControlCommand::Switch {
+                    target: remote_target,
+                    entry: Some(entry),
+                })
+                .await
+                .map_err(map_err)?,
+        )
+        .await
+    }
+}
+
+#[tauri::command]
+fn position_edge_portal_cmd(app: tauri::AppHandle, side: Option<String>) {
+    let _ = windows::position_edge_portal(&app, side.as_deref());
+}
+
+#[tauri::command]
+fn show_edge_portal_cmd(app: tauri::AppHandle) {
+    let _ = windows::show_edge_portal(&app);
+}
+
+#[tauri::command]
+fn hide_edge_portal_cmd(app: tauri::AppHandle) {
+    let _ = windows::hide_edge_portal(&app);
+}
+
+#[tauri::command]
+fn toggle_edge_portal(app: tauri::AppHandle, enable: bool) {
+    if enable {
+        let _ = windows::show_edge_portal(&app);
+    } else {
+        let _ = windows::hide_edge_portal(&app);
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -291,7 +362,12 @@ pub fn run() {
             switch_local,
             release_all,
             set_peer_side,
-            get_peer_side
+            get_peer_side,
+            switch_edge,
+            position_edge_portal_cmd,
+            show_edge_portal_cmd,
+            hide_edge_portal_cmd,
+            toggle_edge_portal
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -305,6 +381,9 @@ pub fn run() {
 
             windows::configure_main_window(app)?;
             windows::configure_tray_panel(app)?;
+            windows::configure_edge_portal(app)?;
+
+            let _ = windows::show_edge_portal(&handle);
 
             if start_hidden {
                 let _ = windows::hide_main_window(&handle);

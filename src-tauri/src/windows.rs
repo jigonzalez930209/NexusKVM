@@ -1,5 +1,5 @@
 use crate::state::AppLifecycleState;
-use crate::window_labels::{MAIN_WINDOW, TRAY_PANEL_WINDOW};
+use crate::window_labels::{EDGE_PORTAL_WINDOW, MAIN_WINDOW, TRAY_PANEL_WINDOW};
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Manager, WindowEvent};
 
@@ -106,6 +106,119 @@ pub fn toggle_tray_panel(app: &AppHandle) -> Result<(), String> {
     }
 }
 
+pub fn position_edge_portal(app: &AppHandle, side: Option<&str>) -> Result<(), String> {
+    let portal = app
+        .get_webview_window(EDGE_PORTAL_WINDOW)
+        .ok_or_else(|| format!("Window '{EDGE_PORTAL_WINDOW}' not found"))?;
+
+    let side_str = if let Some(s) = side {
+        s.to_string()
+    } else {
+        crate::runtime::get_layout(app)
+            .map(|f| match f.peer_side {
+                nexus_common::PeerSide::Left => "left",
+                nexus_common::PeerSide::Right => "right",
+                nexus_common::PeerSide::Top => "top",
+                nexus_common::PeerSide::Bottom => "bottom",
+            }.to_string())
+            .unwrap_or_else(|_| "right".to_string())
+    };
+
+    let monitor = portal
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| app.primary_monitor().ok().flatten())
+        .or_else(|| portal.primary_monitor().ok().flatten())
+        .or_else(|| app.available_monitors().ok().and_then(|mut m| m.pop()));
+
+    if let Some(monitor) = monitor {
+        let origin = monitor.position();
+        let size = monitor.size();
+
+        let (target_x, target_y, target_w, target_h) = match side_str.as_str() {
+            "left" => {
+                let w = 1u32;
+                let h = size.height;
+                (origin.x, origin.y, w, h)
+            }
+            "top" => {
+                let w = size.width;
+                let h = 1u32;
+                (origin.x, origin.y, w, h)
+            }
+            "bottom" => {
+                let w = size.width;
+                let h = 1u32;
+                let y = origin.y + (size.height as i32 - 1);
+                (origin.x, y, w, h)
+            }
+            _ => {
+                // "right"
+                let w = 1u32;
+                let h = size.height;
+                let x = origin.x + (size.width as i32 - 1);
+                (x, origin.y, w, h)
+            }
+        };
+
+        let _ = portal.set_min_size(Some(tauri::Size::Physical(tauri::PhysicalSize {
+            width: 1,
+            height: 1,
+        })));
+        let _ = portal.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+            width: target_w,
+            height: target_h,
+        }));
+        let _ = portal.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+            x: target_x,
+            y: target_y,
+        }));
+        let _ = portal.set_always_on_top(true);
+
+        #[cfg(target_os = "linux")]
+        {
+            use gtk::prelude::*;
+            if let Ok(gtk_win) = portal.gtk_window() {
+                let req_w = target_w as i32;
+                let req_h = target_h as i32;
+                gtk_win.set_size_request(req_w, req_h);
+                for child in gtk_win.children() {
+                    child.set_size_request(req_w, req_h);
+                    if let Ok(container) = child.downcast::<gtk::Container>() {
+                        for sub in container.children() {
+                            sub.set_size_request(req_w, req_h);
+                        }
+                    }
+                }
+                gtk_win.resize(req_w, req_h);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub fn show_edge_portal(app: &AppHandle) -> Result<(), String> {
+    let portal = app
+        .get_webview_window(EDGE_PORTAL_WINDOW)
+        .ok_or_else(|| format!("Window '{EDGE_PORTAL_WINDOW}' not found"))?;
+
+    let _ = position_edge_portal(app, None);
+    let _ = portal.show();
+    let _ = portal.set_always_on_top(true);
+    let _ = position_edge_portal(app, None);
+    Ok(())
+}
+
+pub fn hide_edge_portal(app: &AppHandle) -> Result<(), String> {
+    let portal = app
+        .get_webview_window(EDGE_PORTAL_WINDOW)
+        .ok_or_else(|| format!("Window '{EDGE_PORTAL_WINDOW}' not found"))?;
+
+    portal.hide().map_err(|e| e.to_string())
+}
+
 pub fn open_main_window(app: &AppHandle) -> Result<(), String> {
     let main = app
         .get_webview_window(MAIN_WINDOW)
@@ -153,14 +266,29 @@ pub fn configure_tray_panel(app: &mut tauri::App) -> tauri::Result<()> {
         // Independent window: no auto-hide on focus loss (clicking the main
         // window must not close it). Close = X button, Escape, or tray toggle.
         let app_handle = app.handle().clone();
-        panel.on_window_event(move |event| match event {
-            WindowEvent::CloseRequested { api, .. } => {
+        panel.on_window_event(move |event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 if let Some(p) = app_handle.get_webview_window(TRAY_PANEL_WINDOW) {
                     let _ = p.hide();
                 }
             }
-            _ => {}
+        });
+    }
+
+    Ok(())
+}
+
+pub fn configure_edge_portal(app: &mut tauri::App) -> tauri::Result<()> {
+    if let Some(portal) = app.get_webview_window(EDGE_PORTAL_WINDOW) {
+        let app_handle = app.handle().clone();
+        portal.on_window_event(move |event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                if let Some(p) = app_handle.get_webview_window(EDGE_PORTAL_WINDOW) {
+                    let _ = p.hide();
+                }
+            }
         });
     }
 
