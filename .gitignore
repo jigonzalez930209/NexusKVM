@@ -7,3 +7,6 @@
 *.log
 .env
 .DS_Store
+dist
+cache
+

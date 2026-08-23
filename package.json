@@ -18,7 +18,10 @@
     "release": "bash scripts/release.sh",
     "release:patch": "bash scripts/release.sh patch --push",
     "release:minor": "bash scripts/release.sh minor --push",
-    "release:major": "bash scripts/release.sh major --push"
+    "release:major": "bash scripts/release.sh major --push",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
@@ -40,6 +43,7 @@
     "tailwindcss": "^4.3.3",
     "typescript": "^5.7.2",
     "vite": "^6.0.5",
+    "vitepress": "^1.6.3",
     "vitest": "^2.1.8"
   }
 }
