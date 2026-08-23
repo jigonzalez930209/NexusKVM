@@ -252,10 +252,7 @@ fn get_peer_side(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn switch_edge(
-    app: tauri::AppHandle,
-    normalized_position: f32,
-) -> Result<AppStatus, String> {
+async fn switch_edge(app: tauri::AppHandle, normalized_position: f32) -> Result<AppStatus, String> {
     let layout = runtime::get_layout(&app).map_err(map_err)?;
     let is_client = runtime::data_dir(&app)
         .ok()

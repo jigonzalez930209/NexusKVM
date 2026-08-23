@@ -115,12 +115,15 @@ pub fn position_edge_portal(app: &AppHandle, side: Option<&str>) -> Result<(), S
         s.to_string()
     } else {
         crate::runtime::get_layout(app)
-            .map(|f| match f.peer_side {
-                nexus_common::PeerSide::Left => "left",
-                nexus_common::PeerSide::Right => "right",
-                nexus_common::PeerSide::Top => "top",
-                nexus_common::PeerSide::Bottom => "bottom",
-            }.to_string())
+            .map(|f| {
+                match f.peer_side {
+                    nexus_common::PeerSide::Left => "left",
+                    nexus_common::PeerSide::Right => "right",
+                    nexus_common::PeerSide::Top => "top",
+                    nexus_common::PeerSide::Bottom => "bottom",
+                }
+                .to_string()
+            })
             .unwrap_or_else(|_| "right".to_string())
     };
 
