@@ -1,6 +1,7 @@
 use nexus_agent::daemon_client::DaemonClient;
 use nexus_agent::layout_store::{self, AgentStatusFile};
 use nexus_common::*;
+pub use crate::metrics::ServiceMetrics;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -56,6 +57,8 @@ pub struct RuntimeSnapshot {
     pub portal_available: bool,
     pub portal_error: Option<String>,
     pub clipboard_ok: bool,
+    #[serde(default)]
+    pub metrics: ServiceMetrics,
 }
 
 #[derive(Default)]
@@ -68,12 +71,14 @@ struct Inner {
 
 pub struct AppRuntime {
     inner: Mutex<Inner>,
+    metrics: Mutex<crate::metrics::MetricsTracker>,
 }
 
 impl AppRuntime {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(Inner::default()),
+            metrics: Mutex::new(crate::metrics::MetricsTracker::default()),
         }
     }
 
@@ -559,7 +564,7 @@ pub async fn snapshot(app: &AppHandle, rt: &AppRuntime) -> RuntimeSnapshot {
         .unwrap_or_default()
         .trim()
         .to_string();
-    let (daemon_alive, client_alive, error) = match rt.inner.lock() {
+    let (daemon_alive, client_alive, error, child_pid) = match rt.inner.lock() {
         Ok(mut g) => {
             let d_alive = child_running(&mut g.daemon);
             let c_alive = child_running(&mut g.client);
@@ -583,9 +588,18 @@ pub async fn snapshot(app: &AppHandle, rt: &AppRuntime) -> RuntimeSnapshot {
             if !child_running(&mut g.agent) {
                 g.agent = None;
             }
-            (d_alive, c_alive, g.last_error.clone())
+            let pid = match role {
+                Some(Role::Host) => g.daemon.as_ref().map(|c| c.id()),
+                Some(Role::Client) => g
+                    .client
+                    .as_ref()
+                    .map(|c| c.id())
+                    .or_else(|| g.agent.as_ref().map(|c| c.id())),
+                None => None,
+            };
+            (d_alive, c_alive, g.last_error.clone(), pid)
         }
-        Err(_) => (false, false, None),
+        Err(_) => (false, false, None, None),
     };
     let sock = if matches!(role, Some(Role::Host)) {
         socket_alive().await
@@ -625,6 +639,33 @@ pub async fn snapshot(app: &AppHandle, rt: &AppRuntime) -> RuntimeSnapshot {
         .unwrap_or(false);
     let portal_error = agent_st.as_ref().and_then(|a| a.portal_error.clone());
     let clipboard_ok = agent_st.as_ref().map(|a| a.clipboard_ok).unwrap_or(false);
+    // Real process metrics: prefer our own child handle, else find the systemd
+    // unit's process by binary name.
+    let (_svc_bin, svc_name) = match role {
+        Some(Role::Host) => ("nexus-kvmd", "nexus-kvmd"),
+        Some(Role::Client) => ("rkvm-client", "rkvm-client"),
+        None => ("", ""),
+    };
+    let metrics_pid = child_pid.or_else(|| match role {
+        Some(Role::Host) => crate::metrics::find_service_pid("nexus-kvmd")
+            .or_else(|| crate::metrics::find_service_pid("rkvm-server")),
+        Some(Role::Client) => crate::metrics::find_service_pid("rkvm-client"),
+        None => None,
+    });
+    let track = service_ok || metrics_pid.is_some();
+    let metrics = match rt.metrics.lock() {
+        Ok(mut t) => {
+            if track {
+                t.sample(
+                    metrics_pid,
+                    if svc_name.is_empty() { None } else { Some(svc_name) },
+                )
+            } else {
+                t.sample(None, None)
+            }
+        }
+        Err(_) => crate::metrics::ServiceMetrics::default(),
+    };
     RuntimeSnapshot {
         role,
         running,
@@ -645,6 +686,7 @@ pub async fn snapshot(app: &AppHandle, rt: &AppRuntime) -> RuntimeSnapshot {
         portal_available,
         portal_error,
         clipboard_ok,
+        metrics,
     }
 }
 
