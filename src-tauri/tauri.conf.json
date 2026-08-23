@@ -35,6 +35,23 @@
         "skipTaskbar": true,
         "shadow": true,
         "visible": false
+      },
+      {
+        "title": "NexusKVM Edge Portal",
+        "label": "edge-portal",
+        "width": 1,
+        "height": 1080,
+        "minWidth": 1,
+        "minHeight": 1,
+        "decorations": false,
+        "transparent": true,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": false
       }
     ],
     "security": {
@@ -43,7 +60,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb"],
+    "targets": ["deb", "appimage", "rpm"],
     "category": "Utility",
     "shortDescription": "Spatial KVM for Linux",
     "longDescription": "Share keyboard and mouse between Linux PCs. The app generates certificates and starts the daemon or client automatically.",
@@ -77,6 +94,22 @@
           "/usr/libexec/nexuskvm/nexuskvm-enable-boot.sh": "../scripts/nexuskvm-enable-boot.sh"
         },
         "postInstallScript": "../scripts/deb-postinst.sh"
+      },
+      "rpm": {
+        "depends": [
+          "openssl",
+          "libevdev",
+          "kmod",
+          "libayatana-appindicator3"
+        ],
+        "files": {
+          "/usr/lib/udev/rules.d/70-nexuskvm-uinput.rules": "../udev/70-nexuskvm-desktop.rules",
+          "/etc/modules-load.d/nexuskvm-uinput.conf": "../packaging/nexuskvm-uinput.conf",
+          "/usr/share/doc/nexuskvm/POSTINSTALL.txt": "../packaging/POSTINSTALL.txt",
+          "/usr/lib/systemd/system/nexuskvm-host.service": "../systemd/nexuskvm-host.service",
+          "/usr/lib/systemd/system/nexuskvm-client.service": "../systemd/nexuskvm-client.service",
+          "/usr/libexec/nexuskvm/nexuskvm-enable-boot.sh": "../scripts/nexuskvm-enable-boot.sh"
+        }
       }
     }
   }
