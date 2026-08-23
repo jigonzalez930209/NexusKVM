@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <!-- Left Monitor Gradient (Cyan) -->
+    <linearGradient id="monLeftGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00d2ff" />
+      <stop offset="100%" stop-color="#0072ff" />
+    </linearGradient>
+
+    <!-- Right Monitor Gradient (Indigo/Blue) -->
+    <linearGradient id="monRightGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3a88ff" />
+      <stop offset="100%" stop-color="#2d58e3" />
+    </linearGradient>
+
+    <!-- Arc Bridge Gradient -->
+    <linearGradient id="arcGrad" x1="0%" y1="100%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00d2ff" />
+      <stop offset="50%" stop-color="#00f2fe" />
+      <stop offset="100%" stop-color="#3a88ff" />
+    </linearGradient>
+
+    <!-- Arc Inner Dark Shader -->
+    <linearGradient id="arcDark" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#051937" stop-opacity="0.8" />
+      <stop offset="100%" stop-color="#004d7a" stop-opacity="0.2" />
+    </linearGradient>
+
+    <!-- Transfer Lines Gradient -->
+    <linearGradient id="lineGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0072ff" />
+      <stop offset="50%" stop-color="#00f2fe" />
+      <stop offset="100%" stop-color="#3a88ff" />
+    </linearGradient>
+
+    <!-- Glow Filter -->
+    <filter id="iconGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+
+    <filter id="cursorShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="2" dy="4" stdDeviation="4" flood-color="#000000" flood-opacity="0.35" />
+    </filter>
+  </defs>
+
+  <!-- Arched Bridge (Top Connection Arc) -->
+  <path d="M 148,255 C 140,150 220,135 256,135 C 292,135 372,150 364,255 C 342,160 286,152 256,152 C 226,152 170,160 148,255 Z"
+        fill="url(#arcDark)" />
+  <path d="M 152,250 C 145,155 222,140 256,140 C 290,140 367,155 360,250"
+        stroke="url(#arcGrad)" stroke-width="22" stroke-linecap="round" fill="none" filter="url(#iconGlow)" />
+  <path d="M 152,250 C 145,155 222,140 256,140 C 290,140 367,155 360,250"
+        stroke="#ffffff" stroke-width="6" stroke-linecap="round" fill="none" opacity="0.6" />
+
+  <!-- LEFT MONITOR (Cyan) -->
+  <g class="monitor-left">
+    <!-- Stand -->
+    <path d="M 125,335 L 125,355 L 90,355 C 84,355 80,359 80,365 C 80,371 84,375 90,375 L 160,375 C 166,375 170,371 170,365 C 170,359 166,355 160,355 L 137,355 L 137,335 Z"
+          fill="url(#monLeftGrad)" />
+    <!-- Screen Bezel -->
+    <rect x="36" y="185" width="190" height="150" rx="24"
+          stroke="url(#monLeftGrad)" stroke-width="18" fill="none" />
+    <!-- Screen Inner Display -->
+    <rect x="46" y="195" width="170" height="130" rx="16" fill="#ffffff" fill-opacity="0.95" />
+  </g>
+
+  <!-- RIGHT MONITOR (Blue/Indigo) -->
+  <g class="monitor-right">
+    <!-- Stand -->
+    <path d="M 375,335 L 375,355 L 340,355 C 334,355 330,359 330,365 C 330,371 334,375 340,375 L 410,375 C 416,375 420,371 420,365 C 420,359 416,355 410,355 L 387,355 L 387,335 Z"
+          fill="url(#monRightGrad)" />
+    <!-- Screen Bezel -->
+    <rect x="286" y="185" width="190" height="150" rx="24"
+          stroke="url(#monRightGrad)" stroke-width="18" fill="none" />
+    <!-- Screen Inner Display -->
+    <rect x="296" y="195" width="170" height="130" rx="16" fill="#ffffff" fill-opacity="0.95" />
+  </g>
+
+  <!-- CENTER TRANSFER LINES -->
+  <g class="transfer-lines">
+    <line x1="200" y1="250" x2="275" y2="250" stroke="url(#lineGrad)" stroke-width="7" stroke-linecap="round" />
+    <line x1="190" y1="264" x2="285" y2="264" stroke="url(#lineGrad)" stroke-width="7" stroke-linecap="round" />
+    <line x1="200" y1="278" x2="270" y2="278" stroke="url(#lineGrad)" stroke-width="7" stroke-linecap="round" />
+  </g>
+
+  <!-- MOUSE CURSOR (Crossing to the right screen) -->
+  <g class="mouse-pointer" filter="url(#cursorShadow)">
+    <path d="M 276,238 L 322,274 L 305,278 L 316,298 L 303,304 L 292,284 L 276,296 Z"
+          fill="#ffffff" stroke="#2d58e3" stroke-width="3.5" stroke-linejoin="round" />
+  </g>
+</svg>
