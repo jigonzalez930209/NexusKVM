@@ -172,10 +172,7 @@ async fn daemon_status() -> Result<AppStatus, String> {
 }
 
 #[tauri::command]
-async fn switch_target(
-    app: tauri::AppHandle,
-    target: String,
-) -> Result<AppStatus, String> {
+async fn switch_target(app: tauri::AppHandle, target: String) -> Result<AppStatus, String> {
     // Use the edge configured in the stored layout so the cursor enters the
     // remote screen where the user placed it, not a hardcoded side.
     let entry = runtime::get_layout(&app)
@@ -196,7 +193,10 @@ async fn switch_target(
         });
     status_from(
         runtime::control_client()
-            .send(ControlCommand::Switch { target, entry: Some(entry) })
+            .send(ControlCommand::Switch {
+                target,
+                entry: Some(entry),
+            })
             .await
             .map_err(map_err)?,
     )

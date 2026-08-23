@@ -130,8 +130,7 @@ fn boot_time_secs() -> u64 {
 }
 
 fn process_uptime_secs(starttime_ticks: u64, clk: f64) -> u64 {
-    let started =
-        boot_time_secs() as f64 + starttime_ticks as f64 / clk;
+    let started = boot_time_secs() as f64 + starttime_ticks as f64 / clk;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64())

@@ -4,9 +4,9 @@ use crate::state::AppLifecycleState;
 #[cfg(not(target_os = "linux"))]
 use crate::window_labels::MAIN_TRAY_ID;
 use crate::windows;
+use std::sync::atomic::Ordering;
 #[cfg(not(target_os = "linux"))]
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 #[cfg(not(target_os = "linux"))]
 use tauri::menu::{Menu, MenuItem};
 #[cfg(not(target_os = "linux"))]
@@ -53,13 +53,7 @@ pub fn quit_app(app: &AppHandle, rt: &AppRuntime) {
 #[cfg(not(target_os = "linux"))]
 pub fn create_tray(app: &mut tauri::App, rt: Arc<AppRuntime>) -> tauri::Result<()> {
     let handle = app.handle();
-    let panel_i = MenuItem::with_id(
-        handle,
-        "open_tray",
-        "Open Quick Panel",
-        true,
-        None::<&str>,
-    )?;
+    let panel_i = MenuItem::with_id(handle, "open_tray", "Open Quick Panel", true, None::<&str>)?;
     let show_i = MenuItem::with_id(handle, "show", "Open Main Window", true, None::<&str>)?;
     let quit_i = MenuItem::with_id(handle, "quit", "Quit NexusKVM", true, None::<&str>)?;
     let menu = Menu::with_items(handle, &[&panel_i, &show_i, &quit_i])?;

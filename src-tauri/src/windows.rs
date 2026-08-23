@@ -28,11 +28,7 @@ pub fn position_tray_panel(app: &AppHandle) -> Result<(), String> {
         .flatten()
         .or_else(|| app.primary_monitor().ok().flatten())
         .or_else(|| panel.primary_monitor().ok().flatten())
-        .or_else(|| {
-            app.available_monitors()
-                .ok()
-                .and_then(|mut m| m.pop())
-        });
+        .or_else(|| app.available_monitors().ok().and_then(|mut m| m.pop()));
 
     if let Some(monitor) = monitor {
         let scale = monitor.scale_factor();
@@ -40,7 +36,8 @@ pub fn position_tray_panel(app: &AppHandle) -> Result<(), String> {
         let size = monitor.size();
 
         // Compute physical coordinates directly to avoid any DPI conversion inaccuracies
-        let target_x = origin.x + (size.width as i32 - ((PANEL_W + OFFSET_RIGHT) * scale) as i32).max(0);
+        let target_x =
+            origin.x + (size.width as i32 - ((PANEL_W + OFFSET_RIGHT) * scale) as i32).max(0);
         let target_y = origin.y + (OFFSET_TOP * scale) as i32;
 
         let _ = panel.set_position(tauri::Position::Physical(tauri::PhysicalPosition {

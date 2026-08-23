@@ -1,7 +1,7 @@
+pub use crate::metrics::ServiceMetrics;
 use nexus_agent::daemon_client::DaemonClient;
 use nexus_agent::layout_store::{self, AgentStatusFile};
 use nexus_common::*;
-pub use crate::metrics::ServiceMetrics;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -658,7 +658,11 @@ pub async fn snapshot(app: &AppHandle, rt: &AppRuntime) -> RuntimeSnapshot {
             if track {
                 t.sample(
                     metrics_pid,
-                    if svc_name.is_empty() { None } else { Some(svc_name) },
+                    if svc_name.is_empty() {
+                        None
+                    } else {
+                        Some(svc_name)
+                    },
                 )
             } else {
                 t.sample(None, None)
