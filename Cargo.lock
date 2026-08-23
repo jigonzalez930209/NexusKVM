@@ -2663,6 +2663,7 @@ name = "nexuskvm-ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "gtk",
  "ksni",
  "libc",
  "nexus-agent",
