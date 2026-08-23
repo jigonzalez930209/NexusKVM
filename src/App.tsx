@@ -66,6 +66,13 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    if (!inTauri()) return;
+    const shouldEnablePortal =
+      rt.service_ok && (peers.length > 0 || rt.role === 'client');
+    api.toggleEdgePortal(shouldEnablePortal).catch(() => {});
+  }, [rt.service_ok, rt.role, peers.length, rt.peer_side]);
+
   async function runAction(fn: () => Promise<RuntimeSnapshot | Status | void>) {
     setBusy(true);
     try {

@@ -32,5 +32,13 @@ export const api = {
   toggleTrayWindow: () => invoke<void>('toggle_tray_panel'),
   hideTrayPanel: () => invoke<void>('hide_tray_panel'),
   hideTrayWindow: () => invoke<void>('hide_tray_panel'),
+  switchEdge: (normalizedPosition: number) =>
+    invoke<Status>('switch_edge', { normalizedPosition }),
+  positionEdgePortal: (side?: string) =>
+    invoke<void>('position_edge_portal_cmd', { side }),
+  showEdgePortal: () => invoke<void>('show_edge_portal_cmd'),
+  hideEdgePortal: () => invoke<void>('hide_edge_portal_cmd'),
+  toggleEdgePortal: (enable: boolean) =>
+    invoke<void>('toggle_edge_portal', { enable }),
   quitApp: () => invoke<void>('quit_app_cmd'),
 };
