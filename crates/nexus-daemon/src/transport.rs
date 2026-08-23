@@ -1,11 +1,14 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use nexus_common::{EntryPoint, Peer, PeerId, PeerStatus};
+use rkvm_server::server::PeerLatencies;
 use rkvm_server::target::TargetHandle;
+use std::collections::HashMap;
 
 #[async_trait]
 pub trait InputTransport: Send + Sync {
     async fn peers(&self) -> Result<Vec<Peer>>;
+    fn latencies(&self) -> HashMap<PeerId, u32>;
     async fn prepare(&self, peer: &PeerId, entry: &EntryPoint) -> Result<()>;
     async fn activate(&self, peer: &PeerId) -> Result<()>;
     async fn activate_local(&self) -> Result<()>;
@@ -14,23 +17,30 @@ pub trait InputTransport: Send + Sync {
 
 pub struct RkvmAdapter {
     handle: TargetHandle,
+    latencies: PeerLatencies,
 }
 
 impl RkvmAdapter {
-    pub fn new(handle: TargetHandle) -> Self {
-        Self { handle }
+    pub fn new(handle: TargetHandle, latencies: PeerLatencies) -> Self {
+        Self { handle, latencies }
+    }
+
+    fn latency_map(&self) -> HashMap<PeerId, u32> {
+        self.latencies.lock().unwrap().clone()
     }
 }
 
 #[async_trait]
 impl InputTransport for RkvmAdapter {
     async fn peers(&self) -> Result<Vec<Peer>> {
+        let rtt = self.latency_map();
         Ok(self
             .handle
             .snapshot()
             .peers
             .into_iter()
             .map(|p| Peer {
+                latency_ms: rtt.get(&p.id).copied(),
                 id: p.id.clone(),
                 name: p.id.clone(),
                 address: p.address,
@@ -39,10 +49,13 @@ impl InputTransport for RkvmAdapter {
                 } else {
                     PeerStatus::Disconnected
                 },
-                latency_ms: None,
                 protocol_version: 1,
             })
             .collect())
+    }
+
+    fn latencies(&self) -> HashMap<PeerId, u32> {
+        self.latency_map()
     }
 
     async fn prepare(&self, peer: &PeerId, _: &EntryPoint) -> Result<()> {

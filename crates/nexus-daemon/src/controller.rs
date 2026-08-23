@@ -30,10 +30,18 @@ impl<T: InputTransport> Controller<T> {
         Ok(())
     }
     pub fn status(&self) -> AppStatus {
+        // Merge latest measured RTTs so polling clients see fresh latency values.
+        let rtt = self.transport.latencies();
+        let mut peers = self.peers.read().clone();
+        for (id, peer) in peers.iter_mut() {
+            if let Some(ms) = rtt.get(id) {
+                peer.latency_ms = Some(*ms);
+            }
+        }
         AppStatus {
             state: self.state.read().clone(),
             active_target: self.active_target.read().clone(),
-            peers: self.peers.read().clone(),
+            peers,
             agent_connected: *self.agent_connected.read(),
             portal_available: *self.portal_available.read(),
             emergency_shortcut: "Left Alt + Left Ctrl".into(),
@@ -121,7 +129,7 @@ mod tests {
         }
         let (handle, control) = control_pair_with(router.snapshot());
         tokio::spawn(drive_with(control, router));
-        RkvmAdapter::new(handle)
+        RkvmAdapter::new(handle, rkvm_server::server::new_peer_latencies())
     }
 
     #[tokio::test]

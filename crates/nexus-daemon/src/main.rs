@@ -35,9 +35,18 @@ async fn main() -> anyhow::Result<()> {
         .with_ansi(false)
         .with_target(true)
         .init();
-    match rkvm_input::priority::raise_cpu() {
-        Ok(nice) => tracing::info!(nice, "CPU priority raised"),
-        Err(err) => tracing::warn!(%err, "failed to raise CPU priority"),
+    let boost = rkvm_input::priority::boost_cpu();
+    match boost.rt_prio {
+        Some(prio) => tracing::info!(
+            prio,
+            memlocked = boost.memlocked,
+            "SCHED_FIFO realtime scheduling active (kernel-level input latency)"
+        ),
+        None => tracing::info!(
+            nice = boost.nice,
+            memlocked = boost.memlocked,
+            "realtime unavailable; raised CPU priority via nice"
+        ),
     }
     let args = Args::parse();
     tracing::info!(config = %args.config.display(), "nexus-kvmd 0.1.0-input2");
@@ -55,7 +64,11 @@ async fn main() -> anyhow::Result<()> {
     let propagate = cfg.rkvm.propagate_switch_keys.unwrap_or(true);
 
     let (handle, control) = target::control_pair();
-    let controller = Arc::new(Controller::new(RkvmAdapter::new(handle.clone())));
+    let latencies = rkvm_server::server::new_peer_latencies();
+    let controller = Arc::new(Controller::new(RkvmAdapter::new(
+        handle.clone(),
+        latencies.clone(),
+    )));
     controller.refresh_peers().await?;
 
     let mut snap = handle.subscribe();
@@ -78,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
     let socket = cfg.socket.clone();
 
     tokio::select! {
-        result = server::run(listen, acceptor, &password, &switch_keys, propagate, control) => {
+        result = server::run(listen, acceptor, &password, &switch_keys, propagate, control, latencies) => {
             result.map_err(|e| anyhow::anyhow!(e))?;
         }
         result = ipc_server::serve(&socket, controller) => {
