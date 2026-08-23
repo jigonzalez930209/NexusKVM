@@ -60,7 +60,11 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "appimage", "rpm"],
+    "targets": [
+      "deb",
+      "appimage",
+      "rpm"
+    ],
     "category": "Utility",
     "shortDescription": "Spatial KVM for Linux",
     "longDescription": "Share keyboard and mouse between Linux PCs. The app generates certificates and starts the daemon or client automatically.",
