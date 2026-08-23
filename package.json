@@ -13,7 +13,12 @@
     "package:linux": "bash scripts/package-linux.sh",
     "package:deb": "bash scripts/package-linux.sh deb",
     "package:appimage": "bash scripts/package-linux.sh appimage",
-    "package:rpm": "bash scripts/package-linux.sh rpm"
+    "package:rpm": "bash scripts/package-linux.sh rpm",
+    "version:bump": "bash scripts/release.sh",
+    "release": "bash scripts/release.sh",
+    "release:patch": "bash scripts/release.sh patch --push",
+    "release:minor": "bash scripts/release.sh minor --push",
+    "release:major": "bash scripts/release.sh major --push"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",

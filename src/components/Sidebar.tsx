@@ -1,4 +1,5 @@
 import { Activity, Users, Terminal, Settings, Copy } from 'lucide-react';
+import packageJson from '../../package.json';
 import type { RuntimeSnapshot } from '../types';
 
 export type ActiveTab = 'dashboard' | 'peers' | 'logs' | 'settings';
@@ -77,7 +78,7 @@ export function Sidebar({
 
       <div className="sidebar-footer">
         <div className="version-status">
-          <span>v0.1.0-stable</span>
+          <span>v{packageJson.version}</span>
           <span className="status-online">
             {serviceOk ? 'Online' : 'Stopped'}
           </span>
