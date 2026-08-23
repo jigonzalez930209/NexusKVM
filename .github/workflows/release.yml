@@ -1,0 +1,134 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      draft:
+        description: 'Create draft release'
+        type: boolean
+        default: false
+      prerelease:
+        description: 'Create pre-release'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  release-linux:
+    name: Build & Package Linux Release
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            src-tauri -> src-tauri/target
+            rkvm-master -> rkvm-master/target
+
+      - name: Install Linux build and packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libevdev-dev \
+            libclang-dev \
+            pkg-config \
+            rpm \
+            patchelf \
+            squashfs-tools \
+            libssl-dev
+          sudo apt-get install -y libfuse2 || sudo apt-get install -y libfuse2t64 || true
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build background runtime binaries (release)
+        run: bash scripts/build-runtime-bins.sh --release
+
+      - name: Build Tauri bundles (.deb, .AppImage, .rpm)
+        run: bash scripts/package-linux.sh deb,appimage,rpm
+
+      - name: Create standalone portable archive (.tar.gz)
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          ARCH="x86_64"
+          TAR_NAME="nexuskvm-v${VERSION}-linux-${ARCH}"
+          mkdir -p "dist-tar/${TAR_NAME}/bin"
+
+          # Collect primary UI binary and daemon binaries
+          if [ -f "src-tauri/target/release/nexuskvm" ]; then
+            cp -f "src-tauri/target/release/nexuskvm" "dist-tar/${TAR_NAME}/bin/"
+          elif [ -f "target/release/nexuskvm" ]; then
+            cp -f "target/release/nexuskvm" "dist-tar/${TAR_NAME}/bin/"
+          elif [ -f "target/release/nexuskvm-ui" ]; then
+            cp -f "target/release/nexuskvm-ui" "dist-tar/${TAR_NAME}/bin/nexuskvm"
+          fi
+
+          cp -f "target/release/nexus-kvmd" "dist-tar/${TAR_NAME}/bin/"
+          cp -f "target/release/nexus-agent" "dist-tar/${TAR_NAME}/bin/"
+          cp -f "target/release/nexusctl" "dist-tar/${TAR_NAME}/bin/"
+          cp -f "rkvm-master/target/release/rkvm-client" "dist-tar/${TAR_NAME}/bin/"
+
+          # Include installation and service configs
+          cp -r systemd/ "dist-tar/${TAR_NAME}/"
+          cp -r udev/ "dist-tar/${TAR_NAME}/"
+          cp -r packaging/ "dist-tar/${TAR_NAME}/"
+          cp README.md LICENSE "dist-tar/${TAR_NAME}/"
+
+          tar -czvf "${TAR_NAME}.tar.gz" -C dist-tar "${TAR_NAME}"
+
+      - name: Prepare release artifacts and generate checksums
+        run: |
+          mkdir -p release-artifacts
+
+          # Copy .deb packages
+          find target/release/bundle/deb src-tauri/target/release/bundle/deb -type f -name "*.deb" -exec cp -f {} release-artifacts/ \; 2>/dev/null || true
+          
+          # Copy .AppImage packages
+          find target/release/bundle/appimage src-tauri/target/release/bundle/appimage -type f -name "*.AppImage" -exec cp -f {} release-artifacts/ \; 2>/dev/null || true
+          
+          # Copy .rpm packages
+          find target/release/bundle/rpm src-tauri/target/release/bundle/rpm -type f -name "*.rpm" -exec cp -f {} release-artifacts/ \; 2>/dev/null || true
+          
+          # Copy .tar.gz portable archive
+          cp -f *.tar.gz release-artifacts/ 2>/dev/null || true
+
+          # Generate SHA256 checksums
+          cd release-artifacts
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          cd ..
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-artifacts/*
+          draft: ${{ github.event.inputs.draft == 'true' }}
+          prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
