@@ -78,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
             if snap.changed().await.is_err() {
                 break;
             }
-            let _ = watcher.refresh_peers().await;
+            let _ = watcher.sync_target().await;
         }
     });
 

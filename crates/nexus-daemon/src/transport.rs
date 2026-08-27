@@ -8,6 +8,7 @@ use std::collections::HashMap;
 #[async_trait]
 pub trait InputTransport: Send + Sync {
     async fn peers(&self) -> Result<Vec<Peer>>;
+    fn active_target(&self) -> PeerId;
     fn latencies(&self) -> HashMap<PeerId, u32>;
     async fn prepare(&self, peer: &PeerId, entry: &EntryPoint) -> Result<()>;
     async fn activate(&self, peer: &PeerId) -> Result<()>;
@@ -32,6 +33,10 @@ impl RkvmAdapter {
 
 #[async_trait]
 impl InputTransport for RkvmAdapter {
+    fn active_target(&self) -> PeerId {
+        self.handle.snapshot().active_target
+    }
+
     async fn peers(&self) -> Result<Vec<Peer>> {
         let rtt = self.latency_map();
         Ok(self

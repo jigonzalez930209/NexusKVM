@@ -29,7 +29,27 @@ impl<T: InputTransport> Controller<T> {
         *self.peers.write() = peers.into_iter().map(|p| (p.id.clone(), p)).collect();
         Ok(())
     }
+    pub async fn sync_target(&self) -> Result<()> {
+        let active = self.transport.active_target();
+        *self.active_target.write() = active.clone();
+        let current_state = self.state.read().clone();
+        if active == LOCAL_TARGET {
+            if !matches!(current_state, RuntimeState::Local) {
+                *self.state.write() = RuntimeState::Local;
+            }
+        } else if !matches!(current_state, RuntimeState::Remote { .. }) {
+            *self.state.write() = RuntimeState::Remote {
+                peer: active,
+                transition_id: Uuid::nil(),
+            };
+        }
+        self.refresh_peers().await?;
+        Ok(())
+    }
     pub fn status(&self) -> AppStatus {
+        // Always reflect true active target from transport if available
+        let active = self.transport.active_target();
+        *self.active_target.write() = active.clone();
         // Merge latest measured RTTs so polling clients see fresh latency values.
         let rtt = self.transport.latencies();
         let mut peers = self.peers.read().clone();
@@ -40,7 +60,7 @@ impl<T: InputTransport> Controller<T> {
         }
         AppStatus {
             state: self.state.read().clone(),
-            active_target: self.active_target.read().clone(),
+            active_target: active,
             peers,
             agent_connected: *self.agent_connected.read(),
             portal_available: *self.portal_available.read(),
@@ -52,6 +72,7 @@ impl<T: InputTransport> Controller<T> {
         *self.portal_available.write() = portal;
     }
     pub async fn switch_to(&self, peer: PeerId, entry: EntryPoint) -> Result<Uuid> {
+        let _ = self.refresh_peers().await;
         let connected = self
             .peers
             .read()
@@ -93,11 +114,12 @@ impl<T: InputTransport> Controller<T> {
         *self.state.write() = RuntimeState::ReturningLocal { transition_id: id };
         let current = self.active_target.read().clone();
         if current != LOCAL_TARGET {
-            self.transport.release_all(Some(&current)).await?;
+            let _ = self.transport.release_all(Some(&current)).await;
         }
         self.transport.activate_local().await?;
         *self.active_target.write() = LOCAL_TARGET.into();
         *self.state.write() = RuntimeState::Local;
+        let _ = self.refresh_peers().await;
         Ok(id)
     }
     pub async fn recover(&self, reason: impl Into<String>) -> Result<()> {
