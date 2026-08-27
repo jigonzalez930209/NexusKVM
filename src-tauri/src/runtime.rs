@@ -960,9 +960,7 @@ pub fn set_peer_side(app: &AppHandle, side: &str) -> anyhow::Result<LayoutFile> 
     let peer_side = match side {
         "left" => PeerSide::Left,
         "right" => PeerSide::Right,
-        "top" => PeerSide::Top,
-        "bottom" => PeerSide::Bottom,
-        _ => anyhow::bail!("invalid side: {side} (left|right|top|bottom)"),
+        _ => anyhow::bail!("invalid side: {side} (left|right)"),
     };
     let mut file = layout_store::load_or_default(&dir)?;
     file = file.with_side(peer_side);

@@ -141,26 +141,15 @@ pub fn position_edge_portal(app: &AppHandle, side: Option<&str>) -> Result<(), S
 
         let (target_x, target_y, target_w, target_h) = match side_str.as_str() {
             "left" => {
-                let w = 1u32;
+                let w = 2u32;
                 let h = size.height;
                 (origin.x, origin.y, w, h)
-            }
-            "top" => {
-                let w = size.width;
-                let h = 1u32;
-                (origin.x, origin.y, w, h)
-            }
-            "bottom" => {
-                let w = size.width;
-                let h = 1u32;
-                let y = origin.y + (size.height as i32 - 1);
-                (origin.x, y, w, h)
             }
             _ => {
-                // "right"
-                let w = 1u32;
+                // "right" (default)
+                let w = 2u32;
                 let h = size.height;
-                let x = origin.x + (size.width as i32 - 1);
+                let x = origin.x + (size.width as i32 - 2).max(0);
                 (x, origin.y, w, h)
             }
         };

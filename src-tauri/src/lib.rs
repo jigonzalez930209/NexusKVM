@@ -11,7 +11,7 @@ use nexus_common::*;
 use runtime::{AppRuntime, Invite, RuntimeSnapshot};
 use state::AppLifecycleState;
 use std::sync::Arc;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 fn map_err(e: impl ToString) -> String {
     e.to_string()
@@ -191,7 +191,7 @@ async fn switch_target(app: tauri::AppHandle, target: String) -> Result<AppStatu
             normalized_position: 0.5,
             inset_px: 6,
         });
-    status_from(
+    let status = status_from(
         runtime::control_client()
             .send(ControlCommand::Switch {
                 target,
@@ -200,18 +200,24 @@ async fn switch_target(app: tauri::AppHandle, target: String) -> Result<AppStatu
             .await
             .map_err(map_err)?,
     )
-    .await
+    .await?;
+    let _ = app.emit("nexus-target-changed", &status.active_target);
+    let _ = app.emit("nexus-status-changed", &status);
+    Ok(status)
 }
 
 #[tauri::command]
-async fn switch_local() -> Result<AppStatus, String> {
-    status_from(
+async fn switch_local(app: tauri::AppHandle) -> Result<AppStatus, String> {
+    let status = status_from(
         runtime::control_client()
             .send(ControlCommand::Local)
             .await
             .map_err(map_err)?,
     )
-    .await
+    .await?;
+    let _ = app.emit("nexus-target-changed", &status.active_target);
+    let _ = app.emit("nexus-status-changed", &status);
+    Ok(status)
 }
 
 #[tauri::command]
@@ -237,6 +243,7 @@ fn set_peer_side(app: tauri::AppHandle, side: String) -> Result<String, String> 
         PeerSide::Bottom => "bottom",
     };
     let _ = windows::position_edge_portal(&app, Some(side_str));
+    let _ = app.emit("nexus-peer-side-changed", side_str);
     Ok(side_str.into())
 }
 
@@ -260,22 +267,48 @@ async fn switch_edge(app: tauri::AppHandle, normalized_position: f32) -> Result<
         .map(|s| s.role == runtime::Role::Client)
         .unwrap_or(false);
 
-    if is_client {
+    let status = if is_client {
         status_from(
             runtime::control_client()
                 .send(ControlCommand::Local)
                 .await
                 .map_err(map_err)?,
         )
-        .await
+        .await?
     } else {
-        let remote_target = layout.remote_peer.clone().unwrap_or_else(|| "peer".into());
+        let remote_target = if let Ok(st) = runtime::control_client().send(ControlCommand::Status).await {
+            if let Some(status) = st.status {
+                if let Some(ref rp) = layout.remote_peer {
+                    if status.peers.get(rp).map(|p| p.status == PeerStatus::Connected).unwrap_or(false) {
+                        rp.clone()
+                    } else {
+                        status
+                            .peers
+                            .values()
+                            .find(|p| p.status == PeerStatus::Connected)
+                            .map(|p| p.id.clone())
+                            .or(layout.remote_peer.clone())
+                            .unwrap_or_else(|| "peer".into())
+                    }
+                } else {
+                    status
+                        .peers
+                        .values()
+                        .find(|p| p.status == PeerStatus::Connected)
+                        .map(|p| p.id.clone())
+                        .unwrap_or_else(|| "peer".into())
+                }
+            } else {
+                layout.remote_peer.clone().unwrap_or_else(|| "peer".into())
+            }
+        } else {
+            layout.remote_peer.clone().unwrap_or_else(|| "peer".into())
+        };
+
         let entry = EntryPoint {
             edge: match layout.peer_side {
                 PeerSide::Left => Edge::Left,
-                PeerSide::Right => Edge::Right,
-                PeerSide::Top => Edge::Top,
-                PeerSide::Bottom => Edge::Bottom,
+                _ => Edge::Right,
             },
             normalized_position: normalized_position.clamp(0.0, 1.0),
             inset_px: 6,
@@ -289,8 +322,11 @@ async fn switch_edge(app: tauri::AppHandle, normalized_position: f32) -> Result<
                 .await
                 .map_err(map_err)?,
         )
-        .await
-    }
+        .await?
+    };
+    let _ = app.emit("nexus-target-changed", &status.active_target);
+    let _ = app.emit("nexus-status-changed", &status);
+    Ok(status)
 }
 
 #[tauri::command]
@@ -385,6 +421,34 @@ pub fn run() {
             if start_hidden {
                 let _ = windows::hide_main_window(&handle);
             }
+
+            let watcher_handle = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut last_target: Option<String> = None;
+                let mut last_side: Option<String> = None;
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    if let Ok(st) = runtime::control_client().send(ControlCommand::Status).await {
+                        if let Some(status) = st.status {
+                            if last_target.as_deref() != Some(&status.active_target) {
+                                last_target = Some(status.active_target.clone());
+                                let _ = watcher_handle.emit("nexus-target-changed", &status.active_target);
+                                let _ = watcher_handle.emit("nexus-status-changed", &status);
+                            }
+                        }
+                    }
+                    if let Ok(f) = runtime::get_layout(&watcher_handle) {
+                        let side = match f.peer_side {
+                            PeerSide::Left => "left",
+                            _ => "right",
+                        };
+                        if last_side.as_deref() != Some(side) {
+                            last_side = Some(side.to_string());
+                            let _ = watcher_handle.emit("nexus-peer-side-changed", side);
+                        }
+                    }
+                }
+            });
 
             tauri::async_runtime::spawn(async move {
                 if runtime::data_dir(&handle).ok().is_some() {
