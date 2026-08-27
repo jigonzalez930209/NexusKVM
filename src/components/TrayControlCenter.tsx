@@ -65,8 +65,33 @@ export function TrayControlCenter() {
     refresh();
     const interval = setInterval(refresh, 1500);
 
+    let unlistenTarget: (() => void) | undefined;
+    let unlistenStatus: (() => void) | undefined;
+
+    if (inTauri()) {
+      api
+        .onTargetChanged(() => {
+          refresh();
+        })
+        .then((u) => {
+          unlistenTarget = u;
+        })
+        .catch(() => {});
+
+      api
+        .onStatusChanged(() => {
+          refresh();
+        })
+        .then((u) => {
+          unlistenStatus = u;
+        })
+        .catch(() => {});
+    }
+
     return () => {
       clearInterval(interval);
+      if (unlistenTarget) unlistenTarget();
+      if (unlistenStatus) unlistenStatus();
     };
   }, []);
 
