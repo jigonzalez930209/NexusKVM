@@ -43,7 +43,7 @@ export interface RuntimeSnapshot {
   metrics: ServiceMetrics;
 }
 
-export type PeerSide = 'left' | 'right' | 'top' | 'bottom';
+export type PeerSide = 'left' | 'right';
 
 export interface ServiceMetrics {
   pid: number | null;

@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { Invite, RuntimeSnapshot, Status } from './types';
 
 export function inTauri() {
@@ -41,4 +42,18 @@ export const api = {
   toggleEdgePortal: (enable: boolean) =>
     invoke<void>('toggle_edge_portal', { enable }),
   quitApp: () => invoke<void>('quit_app_cmd'),
+  onTargetChanged: (cb: (target: string) => void): Promise<UnlistenFn> => {
+    if (!inTauri()) return Promise.resolve(() => {});
+    return listen<string>('nexus-target-changed', (event) => cb(event.payload));
+  },
+  onPeerSideChanged: (cb: (side: string) => void): Promise<UnlistenFn> => {
+    if (!inTauri()) return Promise.resolve(() => {});
+    return listen<string>('nexus-peer-side-changed', (event) =>
+      cb(event.payload),
+    );
+  },
+  onStatusChanged: (cb: (status: Status) => void): Promise<UnlistenFn> => {
+    if (!inTauri()) return Promise.resolve(() => {});
+    return listen<Status>('nexus-status-changed', (event) => cb(event.payload));
+  },
 };

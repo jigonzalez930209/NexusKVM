@@ -63,7 +63,46 @@ export default function App() {
   useEffect(() => {
     refresh();
     const interval = setInterval(refresh, 2000);
-    return () => clearInterval(interval);
+
+    let unlistenTarget: (() => void) | undefined;
+    let unlistenSide: (() => void) | undefined;
+    let unlistenStatus: (() => void) | undefined;
+
+    if (inTauri()) {
+      api
+        .onTargetChanged(() => {
+          refresh();
+        })
+        .then((u) => {
+          unlistenTarget = u;
+        })
+        .catch(() => {});
+
+      api
+        .onPeerSideChanged(() => {
+          refresh();
+        })
+        .then((u) => {
+          unlistenSide = u;
+        })
+        .catch(() => {});
+
+      api
+        .onStatusChanged(() => {
+          refresh();
+        })
+        .then((u) => {
+          unlistenStatus = u;
+        })
+        .catch(() => {});
+    }
+
+    return () => {
+      clearInterval(interval);
+      if (unlistenTarget) unlistenTarget();
+      if (unlistenSide) unlistenSide();
+      if (unlistenStatus) unlistenStatus();
+    };
   }, []);
 
   useEffect(() => {
