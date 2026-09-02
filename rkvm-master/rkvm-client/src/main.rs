@@ -62,7 +62,13 @@ async fn main() -> ExitCode {
         }
     };
 
-    let connector = match tls::configure(&config.certificate).await {
+    let connector = match tls::configure(
+        &config.certificate,
+        config.client_certificate.as_deref(),
+        config.client_key.as_deref(),
+    )
+    .await
+    {
         Ok(connector) => connector,
         Err(err) => {
             tracing::error!("Error configuring TLS: {}", err);

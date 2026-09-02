@@ -12,6 +12,10 @@ pub struct Config {
     pub server: Server,
     pub certificate: PathBuf,
     pub password: String,
+    #[serde(default)]
+    pub client_certificate: Option<PathBuf>,
+    #[serde(default)]
+    pub client_key: Option<PathBuf>,
 }
 
 pub struct Server {
