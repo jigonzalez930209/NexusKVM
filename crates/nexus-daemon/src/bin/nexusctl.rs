@@ -43,6 +43,7 @@ async fn main() -> anyhow::Result<()> {
     };
     let req = ControlRequest {
         id: uuid::Uuid::new_v4().to_string(),
+        token: std::env::var("NEXUSKVM_TOKEN").ok(),
         command: cmd,
     };
     let mut s = UnixStream::connect(&socket).await?;
