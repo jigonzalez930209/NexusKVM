@@ -86,13 +86,11 @@ describe('EdgePortal arming and return hysteresis logic', () => {
     expect(isArmed).toBe(false);
   });
 
-  it('validates only left and right edge positions', () => {
-    const validEdges = ['left', 'right'] as const;
+  it('accepts left, right, top and bottom edges', () => {
+    const validEdges = ['left', 'right', 'top', 'bottom'] as const;
     expect(validEdges.includes('left')).toBe(true);
     expect(validEdges.includes('right')).toBe(true);
-    // @ts-expect-error test invalid edge
-    expect(validEdges.includes('top')).toBe(false);
-    // @ts-expect-error test invalid edge
-    expect(validEdges.includes('bottom')).toBe(false);
+    expect(validEdges.includes('top')).toBe(true);
+    expect(validEdges.includes('bottom')).toBe(true);
   });
 });
