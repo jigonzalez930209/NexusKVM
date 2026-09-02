@@ -16,7 +16,11 @@ use tracing::{debug, warn};
 enum LocalSnap {
     Empty,
     Text(String),
-    Image { width: usize, height: usize, rgba: Vec<u8> },
+    Image {
+        width: usize,
+        height: usize,
+        rgba: Vec<u8>,
+    },
     Files(Vec<PathBuf>),
 }
 
@@ -171,11 +175,7 @@ fn fingerprint(snap: &LocalSnap, inbox: &Path) -> String {
             width,
             height,
             rgba,
-        } => format!(
-            "i:{width}x{height}:{}:{}",
-            rgba.len(),
-            simple_hash(rgba)
-        ),
+        } => format!("i:{width}x{height}:{}:{}", rgba.len(), simple_hash(rgba)),
         LocalSnap::Files(paths) => {
             if !paths.is_empty() && paths.iter().all(|p| p.starts_with(inbox)) {
                 return format!("inbox:{}", paths.len());

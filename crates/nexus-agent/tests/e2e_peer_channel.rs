@@ -114,9 +114,13 @@ async fn e2e_clip_text_and_png_roundtrip() {
     });
     tokio::time::sleep(Duration::from_millis(80)).await;
 
-    let ack = peer_channel::send_clip(addr, SECRET, &peer_channel::ClipOut::Text("hello kvm".into()))
-        .await
-        .unwrap();
+    let ack = peer_channel::send_clip(
+        addr,
+        SECRET,
+        &peer_channel::ClipOut::Text("hello kvm".into()),
+    )
+    .await
+    .unwrap();
     assert!(matches!(ack, PeerMessage::Ack { ok: true, .. }));
 
     let png = nexus_agent::clipboard::rgba_to_png(1, 1, &[0, 128, 255, 255]).unwrap();

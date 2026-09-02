@@ -58,9 +58,13 @@ fn aead_crypt(
     let n = Nonce::from_slice(nonce);
     let payload = Payload { msg, aad };
     if encrypt {
-        cipher.encrypt(n, payload).map_err(|_| "aead encrypt".into())
+        cipher
+            .encrypt(n, payload)
+            .map_err(|_| "aead encrypt".into())
     } else {
-        cipher.decrypt(n, payload).map_err(|_| "aead decrypt".into())
+        cipher
+            .decrypt(n, payload)
+            .map_err(|_| "aead decrypt".into())
     }
 }
 
@@ -160,11 +164,7 @@ pub fn token_eq(expected: &str, presented: Option<&str>) -> bool {
     if expected.len() != presented.len() {
         return false;
     }
-    expected
-        .as_bytes()
-        .ct_eq(presented.as_bytes())
-        .unwrap_u8()
-        == 1
+    expected.as_bytes().ct_eq(presented.as_bytes()).unwrap_u8() == 1
 }
 
 #[cfg(test)]

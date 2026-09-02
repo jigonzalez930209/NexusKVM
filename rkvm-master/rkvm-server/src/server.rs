@@ -577,11 +577,7 @@ async fn client(
     tracing::info!("Authenticated successfully");
 
     let (sender, mut receiver) = mpsc::channel(1024);
-    if reg_tx
-        .send((id.to_string(), addr, sender))
-        .await
-        .is_err()
-    {
+    if reg_tx.send((id.to_string(), addr, sender)).await.is_err() {
         return Err(ClientError::Io(io::Error::new(
             ErrorKind::BrokenPipe,
             "control closed before register",

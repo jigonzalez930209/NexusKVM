@@ -1,5 +1,7 @@
 use anyhow::{bail, Context, Result};
-use nexus_common::{now_unix, open, open_chunk, seal, seal_chunk, secret_ok, AeadEnvelope, ReplayGuard};
+use nexus_common::{
+    now_unix, open, open_chunk, seal, seal_chunk, secret_ok, AeadEnvelope, ReplayGuard,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -228,7 +230,11 @@ fn push_tree(
     Ok(())
 }
 
-async fn write_signed(w: &mut (impl AsyncWriteExt + Unpin), password: &str, msg: &PeerMessage) -> Result<()> {
+async fn write_signed(
+    w: &mut (impl AsyncWriteExt + Unpin),
+    password: &str,
+    msg: &PeerMessage,
+) -> Result<()> {
     if !secret_ok(password) {
         bail!("empty peer secret");
     }
@@ -311,7 +317,9 @@ fn dir_size(path: &Path) -> u64 {
 }
 
 fn prune_inbox(clip_dir: &Path) {
-    let Ok(mut entries): Result<Vec<_>, _> = std::fs::read_dir(clip_dir).map(|i| i.flatten().collect()) else {
+    let Ok(mut entries): Result<Vec<_>, _> =
+        std::fs::read_dir(clip_dir).map(|i| i.flatten().collect())
+    else {
         return;
     };
     entries.sort_by_key(|e| e.metadata().and_then(|m| m.modified()).ok());
@@ -416,15 +424,7 @@ pub async fn send_clip(addr: SocketAddr, password: &str, payload: &ClipOut) -> R
     }
     stream.flush().await?;
     let sha256 = hex::encode(hasher.finalize());
-    write_signed(
-        &mut stream,
-        password,
-        &PeerMessage::ClipDone {
-            id,
-            sha256,
-        },
-    )
-    .await?;
+    write_signed(&mut stream, password, &PeerMessage::ClipDone { id, sha256 }).await?;
     let mut lines = BufReader::new(stream);
     read_signed_line(&mut lines, password).await
 }
@@ -509,7 +509,8 @@ async fn recv_clip<R: AsyncRead + Unpin>(
             let mut roots: Vec<PathBuf> = Vec::new();
             let mut seen_root = std::collections::HashSet::new();
             for meta in &files {
-                let rel = safe_rel_path(&meta.name).ok_or_else(|| anyhow::anyhow!("bad file name"))?;
+                let rel =
+                    safe_rel_path(&meta.name).ok_or_else(|| anyhow::anyhow!("bad file name"))?;
                 let path = confined(&dest, &rel).ok_or_else(|| anyhow::anyhow!("bad file name"))?;
                 if let Some(first) = rel.split('/').next() {
                     if seen_root.insert(first.to_string()) {
@@ -595,7 +596,9 @@ where
         let clip_dir = clip_dir.clone();
         let replay = replay.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_conn(stream, peer, password, clip_dir, replay, on_msg, on_clip).await {
+            if let Err(e) =
+                handle_conn(stream, peer, password, clip_dir, replay, on_msg, on_clip).await
+            {
                 debug!("peer control {peer}: {e}");
             }
         });
@@ -784,10 +787,7 @@ mod tests {
 
     #[test]
     fn flatten_keeps_nested_and_empty_dirs() {
-        let root = std::env::temp_dir().join(format!(
-            "nexus-flatten-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("nexus-flatten-{}", std::process::id()));
         let folder = root.join("pack");
         let nested = folder.join("sub");
         std::fs::create_dir_all(nested.join("empty")).unwrap();

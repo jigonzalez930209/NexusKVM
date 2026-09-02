@@ -183,7 +183,9 @@ async fn run_host(
                                     .status
                                     .map(|s| s.active_target)
                                     .or(Some(LOCAL_TARGET.into()))),
-                                Ok(resp) => Err(resp.error.unwrap_or_else(|| "local failed".into())),
+                                Ok(resp) => {
+                                    Err(resp.error.unwrap_or_else(|| "local failed".into()))
+                                }
                                 Err(e) => Err(e.to_string()),
                             }
                         }
