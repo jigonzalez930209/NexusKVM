@@ -22,6 +22,8 @@ pub enum ControlCommand {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlRequest {
     pub id: String,
+    #[serde(default)]
+    pub token: Option<String>,
     #[serde(flatten)]
     pub command: ControlCommand,
 }

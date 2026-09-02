@@ -55,4 +55,13 @@ mod tests {
     fn clamps() {
         assert_eq!(normalize_axis(200.0, 100.0), 1.0);
     }
+    #[test]
+    fn entry_uses_opposite_edge() {
+        let e = entry_for(Edge::Right, 0.25);
+        assert_eq!(e.edge, Edge::Left);
+        assert_eq!(e.normalized_position, 0.25);
+        let e = entry_for(Edge::Left, 1.5);
+        assert_eq!(e.edge, Edge::Right);
+        assert_eq!(e.normalized_position, 1.0);
+    }
 }
