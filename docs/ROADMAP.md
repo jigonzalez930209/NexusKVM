@@ -1,5 +1,7 @@
 # Technical roadmap: software KVM based on rkvm with visual edge transitions
 
+> **Status (August 2026):** Original proposal. Since then the tree includes the Unix control plane (token + `SO_PEERCRED`), `nexusctl`, Wayland portal agent, GUI pairing, mTLS on `:5258`, and clipboard / `SwitchLocal` on `:5259` with AEAD. Current behaviour: `docs/architecture/overview.md`.
+
 **Document version:** 1.0  
 **Date:** August 19, 2026  
 **Status:** technical proposal for MVP and evolution to a stable product  

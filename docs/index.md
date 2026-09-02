@@ -25,7 +25,7 @@ features:
     details: Imperceptible input latency powered by the optimized rkvm-net binary protocol and direct evdev / uinput descriptor handling.
   - icon: 🛡️
     title: Strict Security & Privacy
-    details: End-to-end TLS 1.3 encryption, strict privilege separation without running the GUI as root, and full protection against keyloggers.
+    details: TLS 1.3 + mTLS on the input port, AEAD on the agent/clipboard port, unprivileged GUI, and no world-writable uinput.
   - icon: 🖥️
     title: Native Wayland & X11 Support
     details: First-class integration with org.freedesktop.portal.InputCapture and libei/reis, supporting GNOME 46+, KDE Plasma 6, and X11 environments.

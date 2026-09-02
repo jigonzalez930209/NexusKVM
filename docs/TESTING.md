@@ -3,6 +3,8 @@
 ## Automated
 
 ```bash
+npm run test:all
+# or:
 cargo fmt --all -- --check
 (cd rkvm-master && cargo fmt --all -- --check)
 cargo clippy --workspace --all-targets --no-deps -- -D warnings
@@ -13,18 +15,20 @@ npm run build
 npm run format:check
 ```
 
+Coverage includes IPC token rejection, peer-channel AEAD (bad key, clip roundtrip, empty secret), and TargetRouter per-destination key release.
+
 `rkvm-input` needs `libevdev` (>= 1.9) and a C compiler for bindgen (`libclang-dev`).
 
 ## Real path (no mocks)
 
-From the Tauri app: on the host PC tap «This is the host», copy the pairing code, and on the other paste it. The GUI starts `nexus-kvmd` or `rkvm-client`.
+From the Tauri app: on the host tap **This is the host**, copy the pairing JSON, paste it on the other PC. The GUI starts `nexus-kvmd` or `rkvm-client` plus `nexus-agent`.
 
 Via CLI:
 
-1. Complete `config/daemon.example.toml` (TLS, password, `switch-keys`).
-2. Start `nexus-kvmd --config /path/daemon.toml`.
-3. On the other machine, `rkvm-client` with the same password and certificate.
-4. `nexusctl status` / `nexusctl switch <addr>` / `nexusctl local`.
+1. Fill `config/daemon.example.toml` (TLS paths, non-empty `password`, `switch-keys`).
+2. `nexus-kvmd --config /path/daemon.toml`.
+3. On the other machine, `rkvm-client` with the same password, CA, and **client** cert/key.
+4. `NEXUSKVM_TOKEN=<password> nexusctl status` / `switch <ip>` / `local` / `release-all`.
 
 ## Physical matrix (two Ubuntu machines)
 
@@ -33,12 +37,13 @@ Not run in CI. Includes:
 - Cold boot through GDM.
 - Typing with a lab user.
 - GDM to session switch without recreating devices.
-- Crossing A -> B -> A.
+- Crossing A → B → A (edges + hotkey).
+- Clipboard text / image / folder.
 - Network disconnect while remote.
 - Peer suspend.
 - Agent and portal restart.
 - Resolution and scale change.
-- Modifier keys during transition.
+- Modifier keys during transition (release must follow press destination).
 
 ## Chaos
 
