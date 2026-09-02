@@ -9,8 +9,16 @@ license = "MIT"
 rust-version = "1.87"
 
 [workspace.dependencies]
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+rand = "0.8"
+subtle = "2"
 anyhow = "1"
-arboard = "3"
+arboard = { version = "3", features = ["wayland-data-control"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "input_capture"] }
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }

@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "test": "vitest run",
+    "test:e2e": "vitest run src/__tests__/e2e_kvm.test.ts src/__tests__/portal_hysteresis.test.ts",
+    "test:all": "bash scripts/test-all.sh",
     "format": "prettier --write src/**/*.{ts,tsx,css} index.html vite.config.ts package.json tsconfig.json",
     "format:check": "prettier --check src/**/*.{ts,tsx,css} index.html vite.config.ts package.json tsconfig.json",
     "tauri": "tauri",

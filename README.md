@@ -6,9 +6,9 @@ Rust + Tauri 2 codebase for a software KVM built on a fork of rkvm 0.6.1 (`rkvm-
 
 - `nexus-kvmd` daemon that runs the `rkvm-server` loop and a local control plane.
 - `TargetHandle`: destination by stable ID (`SocketAddr`), shortcuts, and fail-safe when a peer is lost.
-- Local IPC over a Unix socket with JSON Lines and `0660` permissions.
-- `nexusctl` CLI for status, peers, switch, return local, and input release.
-- Session agent with an `EdgeCaptureBackend` contract and a decoupled Wayland portal.
+- Local IPC over a Unix socket (`0660`, pairing token, `SO_PEERCRED`).
+- `nexusctl` CLI (`NEXUSKVM_TOKEN`) for status, peers, switch, local, and `release-all`.
+- Session agent: Wayland InputCapture portal, edge engine, HMAC/AEAD peer channel on `:5259`, clipboard (text/PNG/files).
 - Barrier engine, hysteresis, partial zones, and proportional transformation.
 - Tauri 2 + React + TypeScript UI.
 - systemd services, udev rules, and example configuration.
@@ -16,9 +16,7 @@ Rust + Tauri 2 codebase for a software KVM built on a fork of rkvm 0.6.1 (`rkvm-
 
 ## Real transport
 
-`RkvmAdapter` talks to the fork's `TargetHandle`. Clients remain `rkvm-client` with TLS. Patch details: `docs/RKVM_INTEGRATION.md`.
-
-The InputCapture/EIS portal for Wayland edges still needs the wiring described in `docs/WAYLAND_PORTAL.md`.
+`RkvmAdapter` talks to the fork's `TargetHandle`. Clients remain `rkvm-client` with TLS + mTLS. Patch details: `docs/RKVM_INTEGRATION.md`. Wayland edges: `docs/WAYLAND_PORTAL.md`.
 
 ## Usage (all from the app)
 
@@ -42,7 +40,7 @@ npm run tauri dev
 
 ## Security
 
-Do not run the GUI as root. The daemon should use a system user, minimal udev rules, and a `0660` socket. Never apply `chmod 666 /dev/uinput`.
+Do not run the GUI as root. Never `chmod 666 /dev/uinput`. Input on `:5258` is TLS 1.3 + mTLS + password. Agent control and clipboard on `:5259` are ChaCha20-Poly1305 (not TLS). The Unix socket requires the pairing token. Keep `password` / `*.pem` keys mode `0600`.
 
 ## Install on another PC
 
