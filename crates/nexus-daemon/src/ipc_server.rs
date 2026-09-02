@@ -10,7 +10,11 @@ use tokio::{
 pub async fn serve<T: InputTransport + 'static>(
     path: &Path,
     controller: Arc<Controller<T>>,
+    token: Option<String>,
 ) -> Result<()> {
+    let Some(token) = token.filter(|t| !t.is_empty()) else {
+        anyhow::bail!("control socket token required");
+    };
     if path.exists() {
         std::fs::remove_file(path)?;
     }
@@ -23,12 +27,43 @@ pub async fn serve<T: InputTransport + 'static>(
     loop {
         let (stream, _) = listener.accept().await?;
         let c = controller.clone();
+        let token = token.clone();
         tokio::spawn(async move {
-            let _ = handle(stream, c).await;
+            let _ = handle(stream, c, token).await;
         });
     }
 }
-async fn handle<T: InputTransport>(stream: UnixStream, c: Arc<Controller<T>>) -> Result<()> {
+
+#[cfg(unix)]
+fn peercred_ok(stream: &UnixStream) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            &mut cred as *mut _ as *mut libc::c_void,
+            &mut len,
+        ) == 0
+            && cred.pid > 0
+    }
+}
+
+async fn handle<T: InputTransport>(
+    stream: UnixStream,
+    c: Arc<Controller<T>>,
+    token: String,
+) -> Result<()> {
+    #[cfg(unix)]
+    if !peercred_ok(&stream) {
+        return Ok(());
+    }
     let (r, mut w) = stream.into_split();
     let mut lines = BufReader::new(r).lines();
     while let Some(line) = lines.next_line().await? {
@@ -40,8 +75,7 @@ async fn handle<T: InputTransport>(stream: UnixStream, c: Arc<Controller<T>>) ->
             Err(e) => {
                 w.write_all(
                     format!(
-                        "{}
-",
+                        "{}\n",
                         serde_json::to_string(&ControlResponse::error(
                             "unknown".into(),
                             e.to_string()
@@ -54,6 +88,13 @@ async fn handle<T: InputTransport>(stream: UnixStream, c: Arc<Controller<T>>) ->
             }
         };
         let id = req.id.clone();
+        if !token_eq(&token, req.token.as_deref()) {
+            let resp = ControlResponse::error(id, "unauthorized");
+            w.write_all(serde_json::to_string(&resp)?.as_bytes())
+                .await?;
+            w.write_all(b"\n").await?;
+            continue;
+        }
         let resp = match req.command {
             ControlCommand::Status | ControlCommand::Peers => {
                 ControlResponse::ok(id, Some(c.status()))
@@ -96,11 +137,7 @@ async fn handle<T: InputTransport>(stream: UnixStream, c: Arc<Controller<T>>) ->
         };
         w.write_all(serde_json::to_string(&resp)?.as_bytes())
             .await?;
-        w.write_all(
-            b"
-",
-        )
-        .await?;
+        w.write_all(b"\n").await?;
     }
     Ok(())
 }
