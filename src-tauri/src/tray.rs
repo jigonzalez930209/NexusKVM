@@ -33,15 +33,7 @@ pub fn quit_app(app: &AppHandle, rt: &AppRuntime) {
         return;
     }
     rt.shutdown();
-    // Best-effort: stop boot/GDM units without prompting (may no-op without privileges).
-    for unit in ["nexuskvm-host.service", "nexuskvm-client.service"] {
-        let _ = std::process::Command::new("systemctl")
-            .args(["--no-ask-password", "stop", unit])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
+    persist::stop_boot_services();
 
     let state = app.state::<AppLifecycleState>();
     state.quitting.store(true, Ordering::SeqCst);

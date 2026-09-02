@@ -127,30 +127,32 @@ pub fn position_edge_portal(app: &AppHandle, side: Option<&str>) -> Result<(), S
             .unwrap_or_else(|_| "right".to_string())
     };
 
-    let monitor = portal
-        .current_monitor()
-        .ok()
-        .flatten()
-        .or_else(|| app.primary_monitor().ok().flatten())
-        .or_else(|| portal.primary_monitor().ok().flatten())
-        .or_else(|| app.available_monitors().ok().and_then(|mut m| m.pop()));
+    let monitor = edge_monitor(app, &side_str).or_else(|| {
+        portal
+            .current_monitor()
+            .ok()
+            .flatten()
+            .or_else(|| app.primary_monitor().ok().flatten())
+            .or_else(|| portal.primary_monitor().ok().flatten())
+            .or_else(|| app.available_monitors().ok().and_then(|mut m| m.pop()))
+    });
 
     if let Some(monitor) = monitor {
         let origin = monitor.position();
         let size = monitor.size();
 
         let (target_x, target_y, target_w, target_h) = match side_str.as_str() {
-            "left" => {
-                let w = 2u32;
-                let h = size.height;
-                (origin.x, origin.y, w, h)
-            }
+            "left" => (origin.x, origin.y, 2u32, size.height),
+            "top" => (origin.x, origin.y, size.width, 2u32),
+            "bottom" => (
+                origin.x,
+                origin.y + (size.height as i32 - 2).max(0),
+                size.width,
+                2u32,
+            ),
             _ => {
-                // "right" (default)
-                let w = 2u32;
-                let h = size.height;
                 let x = origin.x + (size.width as i32 - 2).max(0);
-                (x, origin.y, w, h)
+                (x, origin.y, 2u32, size.height)
             }
         };
 
@@ -189,6 +191,19 @@ pub fn position_edge_portal(app: &AppHandle, side: Option<&str>) -> Result<(), S
     }
 
     Ok(())
+}
+
+fn edge_monitor(app: &AppHandle, side: &str) -> Option<tauri::Monitor> {
+    let monitors = app.available_monitors().ok()?;
+    if monitors.is_empty() {
+        return None;
+    }
+    match side {
+        "left" => monitors.into_iter().min_by_key(|m| m.position().x),
+        "top" => monitors.into_iter().min_by_key(|m| m.position().y),
+        "bottom" => monitors.into_iter().max_by_key(|m| m.position().y),
+        _ => monitors.into_iter().max_by_key(|m| m.position().x),
+    }
 }
 
 pub fn show_edge_portal(app: &AppHandle) -> Result<(), String> {

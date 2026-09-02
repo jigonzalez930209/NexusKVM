@@ -7,9 +7,11 @@ mod tray;
 mod window_labels;
 mod windows;
 
+use nexus_agent::peer_channel::{self, PeerMessage};
 use nexus_common::*;
-use runtime::{AppRuntime, Invite, RuntimeSnapshot};
+use runtime::{AppRuntime, Invite, Role, RuntimeSnapshot};
 use state::AppLifecycleState;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
 
@@ -143,6 +145,7 @@ async fn stop_runtime(
     rt: State<'_, Arc<AppRuntime>>,
 ) -> Result<RuntimeSnapshot, String> {
     rt.shutdown();
+    persist::stop_boot_services();
     Ok(runtime::snapshot(&app, &rt).await)
 }
 
@@ -157,6 +160,14 @@ async fn reset_runtime(
 
 #[tauri::command]
 async fn pairing_invite(app: tauri::AppHandle) -> Result<Invite, String> {
+    let is_client = runtime::data_dir(&app)
+        .ok()
+        .and_then(|d| runtime::load_state(&d))
+        .map(|s| s.role == Role::Client)
+        .unwrap_or(false);
+    if is_client {
+        return Err("only the host can generate a pairing invite".into());
+    }
     runtime::invite(&app).map_err(map_err)
 }
 
@@ -173,24 +184,10 @@ async fn daemon_status() -> Result<AppStatus, String> {
 
 #[tauri::command]
 async fn switch_target(app: tauri::AppHandle, target: String) -> Result<AppStatus, String> {
-    // Use the edge configured in the stored layout so the cursor enters the
-    // remote screen where the user placed it, not a hardcoded side.
+    // Crossing this machine's layout edge must enter the remote on the opposite side.
     let entry = runtime::get_layout(&app)
-        .map(|f| EntryPoint {
-            edge: match f.peer_side {
-                PeerSide::Left => Edge::Left,
-                PeerSide::Right => Edge::Right,
-                PeerSide::Top => Edge::Top,
-                PeerSide::Bottom => Edge::Bottom,
-            },
-            normalized_position: 0.5,
-            inset_px: 6,
-        })
-        .unwrap_or(EntryPoint {
-            edge: Edge::Right,
-            normalized_position: 0.5,
-            inset_px: 6,
-        });
+        .map(|f| entry_for(f.peer_side.as_edge(), 0.5))
+        .unwrap_or_else(|_| entry_for(Edge::Right, 0.5));
     let status = status_from(
         runtime::control_client()
             .send(ControlCommand::Switch {
@@ -264,55 +261,84 @@ async fn switch_edge(app: tauri::AppHandle, normalized_position: f32) -> Result<
     let is_client = runtime::data_dir(&app)
         .ok()
         .and_then(|d| runtime::load_state(&d))
-        .map(|s| s.role == runtime::Role::Client)
+        .map(|s| s.role == Role::Client)
         .unwrap_or(false);
 
     let status = if is_client {
-        status_from(
-            runtime::control_client()
-                .send(ControlCommand::Local)
-                .await
-                .map_err(map_err)?,
-        )
-        .await?
+        let server = runtime::data_dir(&app)
+            .ok()
+            .and_then(|d| runtime::load_state(&d))
+            .and_then(|s| s.server);
+        let addr = server
+            .as_deref()
+            .and_then(peer_channel::control_addr_from_peer)
+            .ok_or_else(|| "no host address to return control".to_string())?;
+        let dir = runtime::data_dir(&app).map_err(map_err)?;
+        let password = std::fs::read_to_string(dir.join("password"))
+            .map_err(|_| "no pairing password".to_string())?;
+        let ack = peer_channel::send_to(addr, &PeerMessage::SwitchLocal, password.trim())
+            .await
+            .map_err(map_err)?;
+        match ack {
+            PeerMessage::Ack {
+                ok: true,
+                active_target,
+                ..
+            } => AppStatus {
+                state: RuntimeState::Local,
+                active_target: active_target.unwrap_or_else(|| LOCAL_TARGET.into()),
+                peers: BTreeMap::new(),
+                agent_connected: false,
+                portal_available: false,
+                emergency_shortcut: "Left Alt + Left Ctrl".into(),
+            },
+            PeerMessage::Ack {
+                ok: false, error, ..
+            } => {
+                return Err(error.unwrap_or_else(|| "host did not return local".into()));
+            }
+            _ => return Err("unexpected peer control reply".into()),
+        }
     } else {
-        let remote_target = if let Ok(st) = runtime::control_client().send(ControlCommand::Status).await {
-            if let Some(status) = st.status {
-                if let Some(ref rp) = layout.remote_peer {
-                    if status.peers.get(rp).map(|p| p.status == PeerStatus::Connected).unwrap_or(false) {
-                        rp.clone()
+        let remote_target =
+            if let Ok(st) = runtime::control_client().send(ControlCommand::Status).await {
+                if let Some(status) = st.status {
+                    if let Some(ref rp) = layout.remote_peer {
+                        if status
+                            .peers
+                            .get(rp)
+                            .map(|p| p.status == PeerStatus::Connected)
+                            .unwrap_or(false)
+                        {
+                            rp.clone()
+                        } else {
+                            status
+                                .peers
+                                .values()
+                                .find(|p| p.status == PeerStatus::Connected)
+                                .map(|p| p.id.clone())
+                                .or(layout.remote_peer.clone())
+                                .unwrap_or_else(|| "peer".into())
+                        }
                     } else {
                         status
                             .peers
                             .values()
                             .find(|p| p.status == PeerStatus::Connected)
                             .map(|p| p.id.clone())
-                            .or(layout.remote_peer.clone())
                             .unwrap_or_else(|| "peer".into())
                     }
                 } else {
-                    status
-                        .peers
-                        .values()
-                        .find(|p| p.status == PeerStatus::Connected)
-                        .map(|p| p.id.clone())
-                        .unwrap_or_else(|| "peer".into())
+                    layout.remote_peer.clone().unwrap_or_else(|| "peer".into())
                 }
             } else {
                 layout.remote_peer.clone().unwrap_or_else(|| "peer".into())
-            }
-        } else {
-            layout.remote_peer.clone().unwrap_or_else(|| "peer".into())
-        };
+            };
 
-        let entry = EntryPoint {
-            edge: match layout.peer_side {
-                PeerSide::Left => Edge::Left,
-                _ => Edge::Right,
-            },
-            normalized_position: normalized_position.clamp(0.0, 1.0),
-            inset_px: 6,
-        };
+        let entry = entry_for(
+            layout.peer_side.as_edge(),
+            normalized_position.clamp(0.0, 1.0),
+        );
         status_from(
             runtime::control_client()
                 .send(ControlCommand::Switch {
@@ -334,9 +360,27 @@ fn position_edge_portal_cmd(app: tauri::AppHandle, side: Option<String>) {
     let _ = windows::position_edge_portal(&app, side.as_deref());
 }
 
+fn maybe_show_edge_portal(app: &tauri::AppHandle) {
+    let portal_ok = runtime::data_dir(app)
+        .ok()
+        .and_then(|d| {
+            std::fs::read_to_string(nexus_agent::layout_store::agent_status_path(&d)).ok()
+        })
+        .and_then(|raw| {
+            serde_json::from_str::<nexus_agent::layout_store::AgentStatusFile>(&raw).ok()
+        })
+        .map(|s| s.portal_available)
+        .unwrap_or(false);
+    if portal_ok {
+        let _ = windows::hide_edge_portal(app);
+    } else {
+        let _ = windows::show_edge_portal(app);
+    }
+}
+
 #[tauri::command]
 fn show_edge_portal_cmd(app: tauri::AppHandle) {
-    let _ = windows::show_edge_portal(&app);
+    maybe_show_edge_portal(&app);
 }
 
 #[tauri::command]
@@ -416,7 +460,7 @@ pub fn run() {
             windows::configure_tray_panel(app)?;
             windows::configure_edge_portal(app)?;
 
-            let _ = windows::show_edge_portal(&handle);
+            maybe_show_edge_portal(&handle);
 
             if start_hidden {
                 let _ = windows::hide_main_window(&handle);
@@ -432,7 +476,8 @@ pub fn run() {
                         if let Some(status) = st.status {
                             if last_target.as_deref() != Some(&status.active_target) {
                                 last_target = Some(status.active_target.clone());
-                                let _ = watcher_handle.emit("nexus-target-changed", &status.active_target);
+                                let _ = watcher_handle
+                                    .emit("nexus-target-changed", &status.active_target);
                                 let _ = watcher_handle.emit("nexus-status-changed", &status);
                             }
                         }
@@ -440,13 +485,17 @@ pub fn run() {
                     if let Ok(f) = runtime::get_layout(&watcher_handle) {
                         let side = match f.peer_side {
                             PeerSide::Left => "left",
-                            _ => "right",
+                            PeerSide::Right => "right",
+                            PeerSide::Top => "top",
+                            PeerSide::Bottom => "bottom",
                         };
                         if last_side.as_deref() != Some(side) {
                             last_side = Some(side.to_string());
                             let _ = watcher_handle.emit("nexus-peer-side-changed", side);
+                            maybe_show_edge_portal(&watcher_handle);
                         }
                     }
+                    maybe_show_edge_portal(&watcher_handle);
                 }
             });
 

@@ -34,6 +34,10 @@ pub struct Invite {
     pub server: String,
     pub password: String,
     pub certificate: String,
+    #[serde(default)]
+    pub client_certificate: String,
+    #[serde(default)]
+    pub client_key: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -45,7 +49,9 @@ pub struct RuntimeSnapshot {
     pub listen: String,
     pub advertise: String,
     pub remote_server: Option<String>,
+    #[serde(default)]
     pub password: String,
+    pub has_password: bool,
     pub error: Option<String>,
     pub needs_logout: bool,
     pub log_dir: Option<String>,
@@ -100,18 +106,6 @@ pub fn data_dir(app: &AppHandle) -> anyhow::Result<PathBuf> {
     Ok(dir)
 }
 
-fn runtime_dir() -> PathBuf {
-    let base = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| {
-        format!(
-            "/tmp/nexuskvm-{}",
-            std::env::var("USER").unwrap_or_else(|_| "user".into())
-        )
-    });
-    let dir = PathBuf::from(base).join("nexuskvm");
-    let _ = fs::create_dir_all(&dir);
-    dir
-}
-
 pub fn socket_path() -> PathBuf {
     crate::persist::control_socket_path()
 }
@@ -127,6 +121,20 @@ pub(crate) fn load_state(dir: &Path) -> Option<SavedState> {
 
 fn save_state(dir: &Path, state: &SavedState) -> anyhow::Result<()> {
     fs::write(state_path(dir), serde_json::to_string_pretty(state)?)?;
+    Ok(())
+}
+
+fn set_secret_mode(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+}
+
+fn write_secret(path: &Path, data: impl AsRef<[u8]>) -> anyhow::Result<()> {
+    fs::write(path, data)?;
+    set_secret_mode(path);
     Ok(())
 }
 
@@ -175,16 +183,28 @@ fn ensure_password(dir: &Path) -> anyhow::Result<String> {
     }
     let id = uuid::Uuid::new_v4().simple().to_string();
     let pw = id[..12].to_string();
-    fs::write(&path, &pw)?;
+    write_secret(&path, &pw)?;
     Ok(pw)
 }
 
 fn generate_certs(dir: &Path) -> anyhow::Result<()> {
-    if cert_path(dir).exists() && key_path(dir).exists() {
-        return Ok(());
+    if !(cert_path(dir).exists() && key_path(dir).exists()) {
+        write_ca(dir)?;
     }
+    if issue_client_cert(dir).is_err() {
+        let _ = fs::remove_file(cert_path(dir));
+        let _ = fs::remove_file(key_path(dir));
+        let _ = fs::remove_file(client_cert_path(dir));
+        let _ = fs::remove_file(client_key_path(dir));
+        write_ca(dir)?;
+        issue_client_cert(dir)?;
+    }
+    Ok(())
+}
+
+fn write_ca(dir: &Path) -> anyhow::Result<()> {
     let mut cfg = String::from(
-        "[req]\nprompt = no\ndefault_bits = 2048\ndistinguished_name = req_distinguished_name\nreq_extensions = req_ext\nx509_extensions = v3_req\n[req_distinguished_name]\ncommonName = nexuskvm\n[req_ext]\nsubjectAltName = @alt_names\n[v3_req]\nsubjectAltName = @alt_names\n[alt_names]\nDNS.1 = localhost\n",
+        "[req]\nprompt = no\ndefault_bits = 2048\ndistinguished_name = req_distinguished_name\nx509_extensions = v3_ca\n[req_distinguished_name]\ncommonName = nexuskvm\n[v3_ca]\nbasicConstraints = critical,CA:TRUE\nkeyUsage = critical, digitalSignature, keyEncipherment, keyCertSign\nsubjectAltName = @alt_names\n[alt_names]\nDNS.1 = localhost\n",
     );
     for (i, ip) in local_ips().iter().enumerate() {
         cfg.push_str(&format!("IP.{} = {}\n", i + 1, ip));
@@ -210,6 +230,54 @@ fn generate_certs(dir: &Path) -> anyhow::Result<()> {
     if !status.success() {
         anyhow::bail!("openssl failed to generate the certificate");
     }
+    set_secret_mode(&key_path(dir));
+    Ok(())
+}
+
+fn client_cert_path(dir: &Path) -> PathBuf {
+    dir.join("client-cert.pem")
+}
+fn client_key_path(dir: &Path) -> PathBuf {
+    dir.join("client-key.pem")
+}
+
+fn issue_client_cert(dir: &Path) -> anyhow::Result<()> {
+    if client_cert_path(dir).exists() && client_key_path(dir).exists() {
+        return Ok(());
+    }
+    let csr = dir.join("client.csr");
+    let status = Command::new("openssl")
+        .args(["req", "-new", "-nodes", "-newkey", "rsa:2048", "-keyout"])
+        .arg(client_key_path(dir))
+        .arg("-out")
+        .arg(&csr)
+        .args(["-subj", "/CN=nexuskvm-client"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("openssl failed to create client CSR");
+    }
+    set_secret_mode(&client_key_path(dir));
+    let status = Command::new("openssl")
+        .args(["x509", "-req", "-in"])
+        .arg(&csr)
+        .arg("-CA")
+        .arg(cert_path(dir))
+        .arg("-CAkey")
+        .arg(key_path(dir))
+        .arg("-CAcreateserial")
+        .arg("-out")
+        .arg(client_cert_path(dir))
+        .args(["-days", "3650", "-sha256"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("openssl failed to sign client certificate (re-pair as host)");
+    }
     Ok(())
 }
 
@@ -222,15 +290,20 @@ fn write_daemon_toml(dir: &Path, password: &str, socket: &Path) -> anyhow::Resul
         password
     );
     fs::write(daemon_config_path(dir), body)?;
+    set_secret_mode(&daemon_config_path(dir));
     Ok(())
 }
 
 fn write_client_toml(dir: &Path, server: &str, password: &str) -> anyhow::Result<()> {
     let body = format!(
-        "server = \"{server}\"\ncertificate = \"{}\"\npassword = \"{password}\"\n",
-        cert_path(dir).display()
+        "server = \"{server}\"\ncertificate = \"{}\"\nclient-certificate = \"{}\"\nclient-key = \"{}\"\npassword = \"{}\"\n",
+        cert_path(dir).display(),
+        client_cert_path(dir).display(),
+        client_key_path(dir).display(),
+        password
     );
     fs::write(client_config_path(dir), body)?;
+    set_secret_mode(&client_config_path(dir));
     Ok(())
 }
 
@@ -454,6 +527,10 @@ fn spawn_agent(
         "--role".into(),
         role_s.into(),
     ];
+    let password = fs::read_to_string(password_path(dir))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     if let Some(s) = server {
         cmd_args.push("--server".into());
         cmd_args.push(s.to_string());
@@ -465,6 +542,7 @@ fn spawn_agent(
         &agent_bin,
         &arg_refs,
         "nexus_agent=debug,nexus=debug",
+        password,
     )
 }
 
@@ -474,6 +552,7 @@ fn spawn_logged(
     bin: &Path,
     args: &[&str],
     rust_log: &str,
+    secret_env: Option<String>,
 ) -> anyhow::Result<Child> {
     let log_root = logs_dir(dir);
     fs::create_dir_all(&log_root)?;
@@ -491,15 +570,18 @@ fn spawn_logged(
         .append(true)
         .open(&log_path)?;
     let log_err = log_file.try_clone()?;
-    Command::new(bin)
-        .args(args)
+    let mut cmd = Command::new(bin);
+    cmd.args(args)
         .env("RUST_LOG", rust_log)
         .env("NO_COLOR", "1")
         .env("RUST_LOG_STYLE", "never")
         .stdin(Stdio::null())
         .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(log_err))
-        .spawn()
+        .stderr(Stdio::from(log_err));
+    if let Some(pw) = secret_env {
+        cmd.env("NEXUSKVM_PASSWORD", pw);
+    }
+    cmd.spawn()
         .map_err(|e| anyhow::anyhow!("failed to start {}: {e}", bin.display()))
 }
 
@@ -558,12 +640,11 @@ pub async fn snapshot(app: &AppHandle, rt: &AppRuntime) -> RuntimeSnapshot {
     let state = dir.as_ref().and_then(|d| load_state(d));
     let role = state.as_ref().map(|s| s.role);
     let remote_server = state.as_ref().and_then(|s| s.server.clone());
-    let password = dir
+    let has_password = dir
         .as_ref()
         .and_then(|d| fs::read_to_string(password_path(d)).ok())
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
     let (daemon_alive, client_alive, error, child_pid) = match rt.inner.lock() {
         Ok(mut g) => {
             let d_alive = child_running(&mut g.daemon);
@@ -678,7 +759,8 @@ pub async fn snapshot(app: &AppHandle, rt: &AppRuntime) -> RuntimeSnapshot {
         listen: LISTEN.into(),
         advertise: advertise(),
         remote_server,
-        password,
+        password: String::new(),
+        has_password,
         error,
         needs_logout: !in_input_group(),
         log_dir,
@@ -698,7 +780,7 @@ pub async fn setup_host(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<Runt
     let dir = data_dir(app)?;
     let password = ensure_password(&dir)?;
     generate_certs(&dir)?;
-    write_daemon_toml(&dir, &password, &runtime_dir().join("control.sock"))?;
+    write_daemon_toml(&dir, &password, &crate::persist::control_socket_path())?;
     ensure_default_layout(&dir)?;
     save_state(
         &dir,
@@ -719,8 +801,18 @@ pub async fn setup_client(
     invite: Invite,
 ) -> anyhow::Result<RuntimeSnapshot> {
     let dir = data_dir(app)?;
-    fs::write(password_path(&dir), invite.password.trim())?;
+    write_secret(&password_path(&dir), invite.password.trim())?;
     fs::write(cert_path(&dir), invite.certificate.trim_start())?;
+    if !invite.client_certificate.trim().is_empty() {
+        fs::write(
+            client_cert_path(&dir),
+            invite.client_certificate.trim_start(),
+        )?;
+    }
+    if !invite.client_key.trim().is_empty() {
+        fs::write(client_key_path(&dir), invite.client_key.trim_start())?;
+        set_secret_mode(&client_key_path(&dir));
+    }
     write_client_toml(&dir, invite.server.trim(), invite.password.trim())?;
     save_state(
         &dir,
@@ -808,6 +900,7 @@ pub async fn start(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
                         &bin,
                         &["--config", &cfg_s],
                         "nexus=info,rkvm_server=info,rkvm_input=info",
+                        None,
                     )?);
                 }
                 sleep(Duration::from_millis(800)).await;
@@ -895,6 +988,7 @@ pub async fn start(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
                         &bin,
                         &[&cfg_s],
                         "rkvm_client=info,rkvm_input=info",
+                        None,
                     )?);
                 }
                 sleep(Duration::from_millis(1500)).await;
@@ -948,10 +1042,14 @@ pub fn invite(app: &AppHandle) -> anyhow::Result<Invite> {
         .map_err(|_| anyhow::anyhow!("no password; configure this machine as host"))?;
     let certificate =
         fs::read_to_string(cert_path(&dir)).map_err(|_| anyhow::anyhow!("no certificate yet"))?;
+    let client_certificate = fs::read_to_string(client_cert_path(&dir)).unwrap_or_default();
+    let client_key = fs::read_to_string(client_key_path(&dir)).unwrap_or_default();
     Ok(Invite {
         server: advertise(),
         password: password.trim().into(),
         certificate,
+        client_certificate,
+        client_key,
     })
 }
 
@@ -960,7 +1058,9 @@ pub fn set_peer_side(app: &AppHandle, side: &str) -> anyhow::Result<LayoutFile> 
     let peer_side = match side {
         "left" => PeerSide::Left,
         "right" => PeerSide::Right,
-        _ => anyhow::bail!("invalid side: {side} (left|right)"),
+        "top" => PeerSide::Top,
+        "bottom" => PeerSide::Bottom,
+        _ => anyhow::bail!("invalid side: {side} (left|right|top|bottom)"),
     };
     let mut file = layout_store::load_or_default(&dir)?;
     file = file.with_side(peer_side);
@@ -974,9 +1074,20 @@ pub fn get_layout(app: &AppHandle) -> anyhow::Result<LayoutFile> {
 }
 
 pub fn control_client() -> DaemonClient {
+    let token = dirs_password();
     DaemonClient {
         socket: socket_path().to_string_lossy().into(),
+        token,
     }
+}
+
+fn dirs_password() -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let dir = PathBuf::from(home).join(".local/share/nexuskvm");
+    fs::read_to_string(dir.join("password"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 #[cfg(test)]
@@ -989,6 +1100,8 @@ mod tests {
             server: "10.0.0.2:5258".into(),
             password: "abc".into(),
             certificate: "-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n".into(),
+            client_certificate: String::new(),
+            client_key: String::new(),
         };
         let s = serde_json::to_string(&inv).unwrap();
         let back: Invite = serde_json::from_str(&s).unwrap();

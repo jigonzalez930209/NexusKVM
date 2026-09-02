@@ -175,6 +175,20 @@ pub fn boot_service_enabled(role: Role) -> bool {
     systemctl_quiet(&["is-enabled", "--quiet", unit_name(role)])
 }
 
+pub fn stop_boot_services() {
+    for unit in ["nexuskvm-host.service", "nexuskvm-client.service"] {
+        if !systemctl_quiet(&["is-active", "--quiet", unit]) {
+            continue;
+        }
+        let _ = Command::new("pkexec")
+            .args(["systemctl", "stop", unit])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
 /// Control socket used by the session agent / UI.
 pub fn control_socket_path() -> PathBuf {
     let system = PathBuf::from("/run/nexuskvm/control.sock");
