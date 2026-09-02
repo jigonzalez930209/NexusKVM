@@ -43,17 +43,23 @@ After pasting the pairing code, the status remains on *"Connecting..."* or fails
    ping -c 3 HOST_IP_ADDRESS
    ```
 2. **Check Host Firewall:**
-   Ensure ports `5258/tcp` and `5259/tcp` are open on the Host:
+   Ensure ports `5258/tcp` and `5259/tcp` are open (input TLS and agent AEAD):
    ```bash
    sudo ufw status
-   # If active, allow traffic:
    sudo ufw allow 5258/tcp
    sudo ufw allow 5259/tcp
    ```
-3. **Verify Listening Sockets on the Host:**
+3. **Verify listeners on the Host:**
    ```bash
-   ss -tulpn | grep 5258
+   ss -tulpn | grep -E '5258|5259'
    ```
+   `nexus-kvmd` listens on 5258; `nexus-agent` on 5259. If the agent is missing, edges and clipboard will fail even if hotkeys work.
+
+---
+
+## 3. `nexusctl` says unauthorized
+
+Set `NEXUSKVM_TOKEN` to the contents of `password` in the app data dir (no trailing newline issues: `tr -d '\n'`). Point `--socket` at the live socket (`/run/nexuskvm/control.sock` if the boot unit owns the host).
 
 ---
 
@@ -81,9 +87,8 @@ The keyboard hotkey switches machines fine, but moving the mouse cursor against 
 To inspect detailed internal traces:
 
 ```bash
-# Launch daemon with debug logging
-RUST_LOG=nexus_daemon=debug,nexus_agent=debug,rkvm=debug nexus-kvmd --config ~/.config/nexuskvm/daemon.toml
-
-# Or inspect systemd logs
+RUST_LOG=nexus=debug,nexus_agent=debug,rkvm_server=debug,rkvm_input=info nexus-kvmd --config ~/.local/share/nexuskvm/daemon.toml
 journalctl -u nexuskvm-host.service -f --output=cat
 ```
+
+Do not grep logs for key codes; they are not written. Pairing passwords must not appear in `nexuskvm-ui.log` spawn lines.

@@ -1,90 +1,52 @@
 # CLI Reference: `nexusctl`
 
-`nexusctl` is the command-line interface for NexusKVM. It enables inspecting daemon state, managing connected peer nodes, manually triggering target transitions, and running automation or emergency input recovery.
+Talks to `nexus-kvmd` over the Unix control socket. Output is JSON (`ControlResponse`).
 
 ---
 
-## 1. Basic Syntax & Options
+## 1. Syntax
 
 ```bash
-nexusctl [OPTIONS] <SUBCOMMAND>
+export NEXUSKVM_TOKEN='your-pairing-password'
+nexusctl [--socket PATH] <SUBCOMMAND>
 ```
 
-### Global Options:
-- `--socket <PATH>`: Custom path to the Unix domain socket (default: `$XDG_RUNTIME_DIR/nexuskvm.sock` or `/run/nexuskvm.sock`).
-- `-h, --help`: Print command help.
-- `-V, --version`: Print version information.
+### Options
+
+- `--socket <PATH>`: default `$XDG_RUNTIME_DIR/nexuskvm/control.sock`, else `/run/nexuskvm/control.sock`. Against a boot host unit use `/run/nexuskvm/control.sock`.
+- The pairing password **must** be in `NEXUSKVM_TOKEN`. Without it the daemon returns `unauthorized`. Exit code `2` if `ok` is false.
 
 ---
 
 ## 2. Subcommands
 
-### A. `status`
-Displays current daemon state, active input destination, and list of known clients.
+| Command | IPC | Notes |
+| :--- | :--- | :--- |
+| `nexusctl status` | `status` | State, active target, peers, agent heartbeat. |
+| `nexusctl peers` | `peers` | Same status payload (peer map). |
+| `nexusctl switch <id>` | `switch` | Peer id is the client **IP** (stable), not the ephemeral TCP port. |
+| `nexusctl local` | `local` | Return input to the host. |
+| `nexusctl release-all` | `release_all` | Release held keys and return local. |
+
+There is no `shutdown` command; the daemon rejects remote shutdown.
+
+Example:
 
 ```bash
-nexusctl status
-```
-**Example Output:**
-```text
-Active Target: 192.168.1.50:5258
-Connected Peers:
-  - id: client-laptop (192.168.1.50:5258) [ONLINE]
-  - id: client-desktop (192.168.1.60:5258) [OFFLINE]
-```
-
----
-
-### B. `peers`
-Prints detailed information on all paired endpoints and their connection health.
-
-```bash
-nexusctl peers
+NEXUSKVM_TOKEN=$(cat ~/.local/share/nexuskvm/password) \
+  nexusctl --socket /run/nexuskvm/control.sock local
 ```
 
 ---
 
-### C. `switch`
-Manually directs mouse and keyboard input to a specific peer endpoint address.
+## 3. Recovery over SSH
+
+If the pointer is stuck on a remote machine:
 
 ```bash
-# Switch to remote client
-nexusctl switch 192.168.1.50:5258
-```
-
----
-
-### D. `local`
-Immediately returns mouse and keyboard control back to the **local Host machine**.
-
-```bash
+ssh host
+export NEXUSKVM_TOKEN=...
 nexusctl local
-```
-
----
-
-### E. `release`
-Atomically releases all keys that might be held down in the active destination. Useful for recovering from stuck keys.
-
-```bash
-nexusctl release
-```
-
----
-
-## 3. Automation Script Example
-
-Integrate `nexusctl` into window manager hotkeys (i3, bspwm, Hyprland, Sway) or Stream Deck macros:
-
-```bash
-#!/usr/bin/env bash
-# Quick toggle between Host and Primary Client
-
-ACTIVE=$(nexusctl status | grep "Active Target" | awk '{print $3}')
-
-if [ "$ACTIVE" = "local" ]; then
-    nexusctl switch 192.168.1.50:5258
-else
-    nexusctl local
-fi
+# or
+nexusctl release-all
 ```

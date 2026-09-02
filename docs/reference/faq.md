@@ -11,7 +11,7 @@ Direct answers to common questions about NexusKVM.
 | **Language & Safety** | C++ legacy codebase | **Pure Rust** with modern memory safety and concurrency. |
 | **Wayland Support** | Emulated XWayland grab | **Native** via `org.freedesktop.portal.InputCapture` & `libei`/`reis`. |
 | **Input Engine** | X11 server event injection | **rkvm 0.6.1 fork** interfacing directly with kernel `uinput` & `evdev`. |
-| **Security & Setup** | Manual TLS certificates | **Automatic TLS 1.3** with 1-click pairing token generator. |
+| **Security & Setup** | Manual TLS certificates | **Automatic TLS 1.3 + mTLS** on `:5258`, AEAD on `:5259`, 1-click invite JSON. |
 | **Login Screen Support** | Difficult to setup in systemd | **Native systemd support for GDM/SDDM** via boot helper script. |
 
 ---
@@ -32,4 +32,4 @@ Thanks to the `TargetRouter` state machine and the `fail_local()` fail-safe mech
 ---
 
 ### Can I share the clipboard (Copy & Paste) between computers?
-Yes. The secondary control channel on port `5259/tcp` automatically synchronizes plaintext clipboard buffers between active paired machines.
+Yes. Session agents sync **text, PNG images, and file/folder lists** on `5259/tcp` using ChaCha20-Poly1305 (same pairing password as TLS). Size limits apply (see the network guide). Clipboard is not available before login (GDM); only `rkvm-client` input is.
