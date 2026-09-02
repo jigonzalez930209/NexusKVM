@@ -72,9 +72,15 @@ pub async fn configure(certificate: &Path, key: &Path) -> Result<TlsAcceptor, Er
 
     let key = key.ok_or(Error::NoKeys)?;
 
+    let mut roots = rustls::RootCertStore::empty();
+    for cert in &certificates {
+        let _ = roots.add(cert);
+    }
+    let verifier = rustls::server::AllowAnyAuthenticatedClient::new(roots);
+
     ServerConfig::builder()
         .with_safe_defaults()
-        .with_no_client_auth()
+        .with_client_cert_verifier(Arc::new(verifier))
         .with_single_cert(certificates, key)
         .map(Arc::new)
         .map(Into::into)

@@ -1,5 +1,5 @@
 use rkvm_input::key::Key;
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -57,8 +57,9 @@ pub struct TargetRouter {
     busy: bool,
     order: VecDeque<String>,
     peers: BTreeMap<String, PeerEntry>,
-    held_keys: HashSet<Key>,
+    held_keys: HashMap<Key, String>,
     next_transition: u64,
+    pending_warp: Option<(u8, f32)>,
 }
 
 impl Default for TargetRouter {
@@ -76,8 +77,9 @@ impl TargetRouter {
             busy: false,
             order: VecDeque::new(),
             peers: BTreeMap::new(),
-            held_keys: HashSet::new(),
+            held_keys: HashMap::new(),
             next_transition: 0,
+            pending_warp: None,
         }
     }
 
@@ -127,36 +129,35 @@ impl TargetRouter {
         );
     }
 
-    /// Remove a peer. If it was the active target, fall back to local.
-    pub fn remove_peer(&mut self, id: &str) -> bool {
+    /// Remove a peer. If it was the active target, fall back to local and
+    /// return held keys so the caller can emit releases.
+    pub fn remove_peer(&mut self, id: &str) -> Vec<(Key, String)> {
         self.order.retain(|x| x != id);
         self.peers.remove(id);
         if self.active == id {
-            self.fail_local();
-            true
+            self.fail_local()
         } else {
-            false
+            Vec::new()
         }
     }
 
-    pub fn mark_disconnected(&mut self, id: &str) -> bool {
+    pub fn mark_disconnected(&mut self, id: &str) -> Vec<(Key, String)> {
         if let Some(peer) = self.peers.get_mut(id) {
             peer.connected = false;
         }
         if self.active == id {
-            self.fail_local();
-            true
+            self.fail_local()
         } else {
-            false
+            Vec::new()
         }
     }
 
-    fn fail_local(&mut self) {
+    fn fail_local(&mut self) -> Vec<(Key, String)> {
         self.previous = self.active.clone();
         self.active = LOCAL_TARGET.to_string();
         self.chord_changed = false;
         self.busy = false;
-        self.held_keys.clear();
+        self.drain_held()
     }
 
     fn alloc_transition(&mut self) -> TransitionId {
@@ -168,14 +169,19 @@ impl TargetRouter {
         self.peers.get(id).map(|p| p.connected).unwrap_or(false)
     }
 
-    pub fn prepare(&mut self, id: &str) -> Result<(), TargetError> {
+    pub fn prepare(&mut self, id: &str, warp: Option<(u8, f32)>) -> Result<(), TargetError> {
         if self.busy {
             return Err(TargetError::TransitionInProgress);
         }
         if !self.connected(id) {
             return Err(TargetError::PeerUnavailable(id.to_string()));
         }
+        self.pending_warp = warp;
         Ok(())
+    }
+
+    pub fn take_warp(&mut self) -> Option<(u8, f32)> {
+        self.pending_warp.take()
     }
 
     fn apply_switch(&mut self, id: &str, from_chord: bool) -> Result<TransitionId, TargetError> {
@@ -240,21 +246,31 @@ impl TargetRouter {
 
     pub fn note_key(&mut self, key: Key, down: bool) {
         if down {
-            self.held_keys.insert(key);
+            self.held_keys.insert(key, self.event_target().to_string());
         } else {
             self.held_keys.remove(&key);
         }
     }
 
-    pub fn drain_held(&mut self) -> Vec<Key> {
+    pub fn drain_held(&mut self) -> Vec<(Key, String)> {
         self.held_keys.drain().collect()
     }
 
-    pub fn release_all(&mut self, peer: Option<&str>) -> Result<Vec<Key>, TargetError> {
+    pub fn release_all(&mut self, peer: Option<&str>) -> Result<Vec<(Key, String)>, TargetError> {
         if let Some(id) = peer {
             if id != LOCAL_TARGET && !self.peers.contains_key(id) {
                 return Err(TargetError::PeerUnavailable(id.to_string()));
             }
+            let mut out = Vec::new();
+            self.held_keys.retain(|k, dest| {
+                if dest == id {
+                    out.push((*k, dest.clone()));
+                    false
+                } else {
+                    true
+                }
+            });
+            return Ok(out);
         }
         Ok(self.drain_held())
     }
@@ -263,6 +279,7 @@ impl TargetRouter {
 enum Command {
     Prepare {
         id: String,
+        warp: Option<(u8, f32)>,
         reply: oneshot::Sender<Result<(), TargetError>>,
     },
     Activate {
@@ -274,7 +291,7 @@ enum Command {
     },
     ReleaseAll {
         peer: Option<String>,
-        reply: oneshot::Sender<Result<Vec<Key>, TargetError>>,
+        reply: oneshot::Sender<Result<Vec<(Key, String)>, TargetError>>,
     },
     Next {
         reply: oneshot::Sender<Result<TransitionId, TargetError>>,
@@ -299,19 +316,21 @@ impl TargetControl {
 pub struct PendingCommand(Command);
 
 impl PendingCommand {
-    pub fn apply(self, router: &mut TargetRouter) -> Vec<Key> {
+    pub fn apply(self, router: &mut TargetRouter) -> Vec<(Key, String)> {
         match self.0 {
-            Command::Prepare { id, reply } => {
-                let _ = reply.send(router.prepare(&id));
+            Command::Prepare { id, warp, reply } => {
+                let _ = reply.send(router.prepare(&id, warp));
                 Vec::new()
             }
             Command::Activate { id, reply } => {
+                let keys = router.drain_held();
                 let _ = reply.send(router.switch_to(&id));
-                Vec::new()
+                keys
             }
             Command::Local { reply } => {
+                let keys = router.drain_held();
                 let _ = reply.send(router.switch_local());
-                Vec::new()
+                keys
             }
             Command::ReleaseAll { peer, reply } => {
                 let r = router.release_all(peer.as_deref());
@@ -342,11 +361,12 @@ impl TargetHandle {
         self.snap_rx.clone()
     }
 
-    pub async fn prepare(&self, id: &str) -> Result<(), TargetError> {
+    pub async fn prepare(&self, id: &str, warp: Option<(u8, f32)>) -> Result<(), TargetError> {
         let (reply, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::Prepare {
                 id: id.to_string(),
+                warp,
                 reply,
             })
             .await
@@ -375,7 +395,7 @@ impl TargetHandle {
         rx.await.map_err(|_| TargetError::Closed)?
     }
 
-    pub async fn release_all(&self, peer: Option<&str>) -> Result<Vec<Key>, TargetError> {
+    pub async fn release_all(&self, peer: Option<&str>) -> Result<Vec<(Key, String)>, TargetError> {
         let (reply, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::ReleaseAll {
@@ -471,8 +491,34 @@ mod tests {
     fn lost_active_peer_returns_local() {
         let mut c = fixture_with_peer("b", true);
         c.switch_to("b").unwrap();
-        assert!(c.remove_peer("b"));
+        c.remove_peer("b");
         assert_eq!(c.active_target(), LOCAL_TARGET);
+    }
+
+    #[test]
+    fn lost_active_peer_drains_held_keys() {
+        use rkvm_input::key::{Key, Keyboard};
+        let mut c = fixture_with_peer("b", true);
+        c.switch_to("b").unwrap();
+        c.note_key(Key::Key(Keyboard::A), true);
+        let released = c.remove_peer("b");
+        assert_eq!(released, vec![(Key::Key(Keyboard::A), "b".to_string())]);
+        assert_eq!(c.active_target(), LOCAL_TARGET);
+        assert!(c.drain_held().is_empty());
+    }
+
+    #[test]
+    fn release_follows_press_destination() {
+        use rkvm_input::key::{Key, Keyboard};
+        let mut c = fixture_with_peer("b", true);
+        c.note_key(Key::Key(Keyboard::LeftShift), true);
+        c.switch_to("b").unwrap();
+        let keys = c.release_all(Some("local")).unwrap();
+        assert_eq!(
+            keys,
+            vec![(Key::Key(Keyboard::LeftShift), LOCAL_TARGET.to_string())]
+        );
+        assert!(c.drain_held().is_empty());
     }
 
     #[test]

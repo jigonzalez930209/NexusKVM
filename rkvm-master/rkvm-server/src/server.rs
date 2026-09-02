@@ -1,5 +1,5 @@
 use crate::target::{TargetControl, TargetRouter, LOCAL_TARGET};
-use rkvm_input::abs::{AbsAxis, AbsInfo};
+use rkvm_input::abs::{AbsAxis, AbsEvent, AbsInfo};
 use rkvm_input::event::Event;
 use rkvm_input::key::{Key, KeyEvent};
 use rkvm_input::monitor::Monitor;
@@ -15,7 +15,7 @@ use std::ffi::CString;
 use std::io::{self, ErrorKind};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Shared registry of per-peer round-trip times in milliseconds, keyed by peer id.
 pub type PeerLatencies = Arc<Mutex<HashMap<String, u32>>>;
@@ -27,7 +27,7 @@ use thiserror::Error;
 use tokio::io::{AsyncWriteExt, BufStream};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::mpsc::{self, Sender};
 use tokio::time;
 use tokio_rustls::TlsAcceptor;
 use tracing::Instrument;
@@ -70,16 +70,67 @@ pub async fn run(
     // High capacity: the mouse produces REL_X/REL_Y/SYN at a high rate; cap 1
     // blocked the interceptor until each TLS flush and caused SYN_DROPPED.
     let (events_sender, mut events_receiver) = mpsc::channel(1024);
+    let (reg_tx, mut reg_rx) = mpsc::channel::<(String, SocketAddr, Sender<Update>)>(16);
     control.publish(router.snapshot());
+    let mut prune_tick = time::interval(Duration::from_millis(250));
+    prune_tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
     loop {
         let event = async { events_receiver.recv().await.unwrap() };
 
         tokio::select! {
             Some(cmd) = control.recv() => {
-                let dest = router.event_target().to_string();
                 let keys = cmd.apply(&mut router);
-                emit_releases(&mut devices, &mut clients, &mut router, dest, keys).await?;
+                emit_releases(&mut devices, &mut clients, &mut router, keys).await?;
+                if let Some((edge, pos)) = router.take_warp() {
+                    let active = router.active_target().to_string();
+                    emit_warp(&mut devices, &mut clients, &mut router, active, edge, pos).await?;
+                }
+                control.publish(router.snapshot());
+            }
+            _ = prune_tick.tick() => {
+                prune_and_release(
+                    &mut devices,
+                    &mut clients,
+                    &mut router,
+                    &latencies,
+                    &control,
+                )
+                .await?;
+            }
+            Some((id, addr, sender)) = reg_rx.recv() => {
+                prune_and_release(
+                    &mut devices,
+                    &mut clients,
+                    &mut router,
+                    &latencies,
+                    &control,
+                )
+                .await?;
+                clients.retain(|_, client| client.id != id);
+                router.insert_peer(id.clone(), addr.to_string());
+                let notify = sender.clone();
+                clients.insert(ClientSlot {
+                    sender,
+                    addr,
+                    id: id.clone(),
+                });
+                for (dev_id, device) in devices.iter() {
+                    let _ = notify
+                        .send(Update::CreateDevice {
+                            id: dev_id,
+                            name: device.name.clone(),
+                            version: device.version,
+                            vendor: device.vendor,
+                            product: device.product,
+                            rel: device.rel.clone(),
+                            abs: device.abs.clone(),
+                            keys: device.keys.clone(),
+                            delay: device.delay,
+                            period: device.period,
+                        })
+                        .await;
+                }
                 control.publish(router.snapshot());
             }
             result = listener.accept() => {
@@ -89,50 +140,21 @@ pub async fn run(
                 }
                 let acceptor = acceptor.clone();
                 let password = password.to_owned();
-
-                prune_clients(&mut clients, &mut router, &latencies);
-                control.publish(router.snapshot());
-
-                let init_updates = devices
-                    .iter()
-                    .map(|(id, device)| Update::CreateDevice {
-                        id,
-                        name: device.name.clone(),
-                        version: device.version,
-                        vendor: device.vendor,
-                        product: device.product,
-                        rel: device.rel.clone(),
-                        abs: device.abs.clone(),
-                        keys: device.keys.clone(),
-                        delay: device.delay,
-                        period: device.period,
-                    })
-                    .collect();
-
-                let (sender, receiver) = mpsc::channel(1024);
                 let id = peer_id(addr);
-                router.insert_peer(id.clone(), addr.to_string());
-                clients.insert(ClientSlot {
-                    sender,
-                    addr,
-                    id: id.clone(),
-                });
-                control.publish(router.snapshot());
-
                 let span = tracing::info_span!("connection", addr = %addr);
                 let client_latencies = latencies.clone();
+                let reg_tx = reg_tx.clone();
                 tokio::spawn(
                     async move {
                         tracing::info!("Connected");
-
                         match client(
-                            init_updates,
-                            receiver,
                             stream,
                             acceptor,
                             &password,
                             &id,
+                            addr,
                             client_latencies.clone(),
+                            reg_tx,
                         )
                         .await
                         {
@@ -285,15 +307,16 @@ pub async fn run(
     }
 }
 
+/// Stable across reconnects: the client ephemeral TCP port must not be part of the id.
 fn peer_id(addr: SocketAddr) -> String {
-    addr.to_string()
+    addr.ip().to_string()
 }
 
 fn prune_clients(
     clients: &mut Slab<ClientSlot>,
     router: &mut TargetRouter,
     latencies: &PeerLatencies,
-) {
+) -> Vec<(Key, String)> {
     let mut dead = Vec::new();
     clients.retain(|_, client| {
         if client.sender.is_closed() {
@@ -303,10 +326,31 @@ fn prune_clients(
             true
         }
     });
+    let mut keys = Vec::new();
     for id in dead {
-        router.remove_peer(&id);
+        keys.extend(router.remove_peer(&id));
         latencies.lock().unwrap().remove(&id);
     }
+    keys
+}
+
+async fn prune_and_release(
+    devices: &mut Slab<Device>,
+    clients: &mut Slab<ClientSlot>,
+    router: &mut TargetRouter,
+    latencies: &PeerLatencies,
+    control: &TargetControl,
+) -> Result<(), Error> {
+    let before = router.snapshot();
+    let keys = prune_clients(clients, router, latencies);
+    if !keys.is_empty() {
+        emit_releases(devices, clients, router, keys).await?;
+    }
+    let after = router.snapshot();
+    if before != after {
+        control.publish(after);
+    }
+    Ok(())
 }
 
 async fn route_events(
@@ -356,10 +400,9 @@ async fn emit_releases(
     devices: &mut Slab<Device>,
     clients: &mut Slab<ClientSlot>,
     router: &mut TargetRouter,
-    dest: String,
-    keys: Vec<Key>,
+    keys: Vec<(Key, String)>,
 ) -> Result<(), Error> {
-    for key in keys {
+    for (key, dest) in keys {
         if dest == LOCAL_TARGET {
             for (_, device) in devices.iter() {
                 for event in [
@@ -373,22 +416,77 @@ async fn emit_releases(
                 }
             }
         } else {
-            let events = [
-                Event::Key(KeyEvent { key, down: false }),
-                Event::Sync(SyncEvent::All),
-            ];
-            route_events(
-                devices,
-                clients,
-                router,
-                0,
-                dest.clone(),
-                events.into_iter(),
-            )
-            .await?;
+            let device_ids: Vec<usize> = devices.iter().map(|(id, _)| id).collect();
+            for device_id in device_ids {
+                let events = [
+                    Event::Key(KeyEvent { key, down: false }),
+                    Event::Sync(SyncEvent::All),
+                ];
+                route_events(
+                    devices,
+                    clients,
+                    router,
+                    device_id,
+                    dest.clone(),
+                    events.into_iter(),
+                )
+                .await?;
+            }
         }
     }
     Ok(())
+}
+
+fn lerp_abs(normalized: f32, min: i32, max: i32) -> i32 {
+    if max <= min {
+        return min;
+    }
+    let t = normalized.clamp(0.0, 1.0);
+    min + ((max - min) as f32 * t).round() as i32
+}
+
+async fn emit_warp(
+    devices: &mut Slab<Device>,
+    clients: &mut Slab<ClientSlot>,
+    router: &mut TargetRouter,
+    dest: String,
+    edge: u8,
+    pos: f32,
+) -> Result<(), Error> {
+    let Some((device_id, xmin, xmax, ymin, ymax)) = devices.iter().find_map(|(id, d)| {
+        let x = d.abs.get(&AbsAxis::X)?;
+        let y = d.abs.get(&AbsAxis::Y)?;
+        Some((id, x.min, x.max, y.min, y.max))
+    }) else {
+        return Ok(());
+    };
+    let inset = 2;
+    let (xv, yv) = match edge {
+        0 => (xmin + inset, lerp_abs(pos, ymin, ymax)),
+        1 => (xmax.saturating_sub(inset), lerp_abs(pos, ymin, ymax)),
+        2 => (lerp_abs(pos, xmin, xmax), ymin + inset),
+        _ => (lerp_abs(pos, xmin, xmax), ymax.saturating_sub(inset)),
+    };
+    let events = [
+        Event::Abs(AbsEvent::Axis {
+            axis: AbsAxis::X,
+            value: xv,
+        }),
+        Event::Abs(AbsEvent::Axis {
+            axis: AbsAxis::Y,
+            value: yv,
+        }),
+        Event::Sync(SyncEvent::All),
+    ];
+    route_events(
+        devices,
+        clients,
+        router,
+        device_id,
+        dest,
+        events.into_iter(),
+    )
+    .await
 }
 
 struct Device {
@@ -417,13 +515,13 @@ enum ClientError {
 }
 
 async fn client(
-    mut init_updates: VecDeque<Update>,
-    mut receiver: Receiver<Update>,
     stream: TcpStream,
     acceptor: TlsAcceptor,
     password: &str,
     id: &str,
+    addr: SocketAddr,
     latencies: PeerLatencies,
+    reg_tx: Sender<(String, SocketAddr, Sender<Update>)>,
 ) -> Result<(), ClientError> {
     let stream = rkvm_net::timeout(rkvm_net::TLS_TIMEOUT, acceptor.accept(stream)).await?;
     tracing::info!("TLS connected");
@@ -477,6 +575,19 @@ async fn client(
     }
 
     tracing::info!("Authenticated successfully");
+
+    let (sender, mut receiver) = mpsc::channel(1024);
+    if reg_tx
+        .send((id.to_string(), addr, sender))
+        .await
+        .is_err()
+    {
+        return Err(ClientError::Io(io::Error::new(
+            ErrorKind::BrokenPipe,
+            "control closed before register",
+        )));
+    }
+    let mut init_updates = VecDeque::new();
 
     let mut interval = time::interval(rkvm_net::PING_INTERVAL);
     let mut awaiting_pong = false;
@@ -560,4 +671,23 @@ async fn client(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_id_ignores_ephemeral_port() {
+        let a: SocketAddr = "192.168.1.5:54321".parse().unwrap();
+        let b: SocketAddr = "192.168.1.5:11111".parse().unwrap();
+        assert_eq!(peer_id(a), peer_id(b));
+        assert_eq!(peer_id(a), "192.168.1.5");
+    }
+
+    #[test]
+    fn peer_id_ipv6_is_address_only() {
+        let a: SocketAddr = "[2001:db8::1]:5258".parse().unwrap();
+        assert_eq!(peer_id(a), "2001:db8::1");
+    }
 }
