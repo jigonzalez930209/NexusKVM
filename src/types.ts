@@ -29,6 +29,7 @@ export interface RuntimeSnapshot {
   advertise: string;
   remote_server: string | null;
   password: string;
+  has_password: boolean;
   error: string | null;
   needs_logout: boolean;
   log_dir: string | null;
@@ -43,7 +44,7 @@ export interface RuntimeSnapshot {
   metrics: ServiceMetrics;
 }
 
-export type PeerSide = 'left' | 'right';
+export type PeerSide = 'left' | 'right' | 'top' | 'bottom';
 
 export interface ServiceMetrics {
   pid: number | null;

@@ -19,6 +19,7 @@ const emptyRuntime: RuntimeSnapshot = {
   advertise: '',
   remote_server: null,
   password: '',
+  has_password: false,
   error: null,
   needs_logout: false,
   log_dir: null,
@@ -181,7 +182,7 @@ export default function App() {
         id: 'clip',
         type: 'info',
         title: 'Clipboard Sync',
-        desc: 'Plaintext clipboard bridge is active.',
+        desc: 'Text, images, and files sync in the background.',
       });
     }
     return list;
