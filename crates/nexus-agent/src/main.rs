@@ -28,6 +28,9 @@ struct Args {
     /// Host address (client only), e.g. 192.168.0.10:5258
     #[arg(long)]
     server: Option<String>,
+    /// Shared pairing password (HMAC/AEAD). Prefer env NEXUSKVM_PASSWORD.
+    #[arg(long)]
+    password: Option<String>,
 }
 
 #[tokio::main]
@@ -52,7 +55,22 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let clipboard = Arc::new(ClipboardBridge::new());
+    let password = args
+        .password
+        .clone()
+        .or_else(|| std::env::var("NEXUSKVM_PASSWORD").ok())
+        .or_else(|| {
+            std::fs::read_to_string(args.data_dir.join("password"))
+                .ok()
+                .map(|s| s.trim().to_string())
+        })
+        .unwrap_or_default();
+    if password.is_empty() {
+        anyhow::bail!("pairing password required (NEXUSKVM_PASSWORD or data-dir/password)");
+    }
+    let inbox = args.data_dir.join("clip-inbox");
+    let clipboard = Arc::new(ClipboardBridge::new(inbox));
+    clipboard.set_secret(password.clone());
     clipboard.spawn_watch();
 
     let backend = PortalBackend::connect().await?;
@@ -66,8 +84,8 @@ async fn main() -> anyhow::Result<()> {
     );
 
     match args.role {
-        Role::Host => run_host(args, layout_file, backend, clipboard).await,
-        Role::Client => run_client(args, layout_file, backend, clipboard).await,
+        Role::Host => run_host(args, layout_file, backend, clipboard, password).await,
+        Role::Client => run_client(args, layout_file, backend, clipboard, password).await,
     }
 }
 
@@ -100,9 +118,11 @@ async fn run_host(
     mut layout_file: LayoutFile,
     backend: PortalBackend,
     clipboard: Arc<ClipboardBridge>,
+    password: String,
 ) -> anyhow::Result<()> {
     let daemon = DaemonClient {
         socket: args.socket.clone(),
+        token: Some(password.clone()),
     };
     // Wait for the daemon socket.
     for _ in 0..50 {
@@ -145,20 +165,35 @@ async fn run_host(
     let bind: SocketAddr = format!("0.0.0.0:{CONTROL_PORT}").parse()?;
     let daemon_listen = daemon.clone();
     let clip_listen = clipboard.clone();
+    let pw = password.clone();
+    let inbox = args.data_dir.join("clip-inbox");
     tokio::spawn(async move {
-        let _ = peer_channel::listen(bind, move |msg, _| {
-            let daemon = daemon_listen.clone();
-            let clip = clip_listen.clone();
-            async move {
-                match msg {
-                    PeerMessage::SwitchLocal => {
-                        let _ = daemon.send(ControlCommand::Local).await;
+        let _ = peer_channel::listen(
+            bind,
+            pw,
+            Some(inbox),
+            move |msg, _| {
+                let daemon = daemon_listen.clone();
+                async move {
+                    match msg {
+                        PeerMessage::SwitchLocal => {
+                            let r = daemon.send(ControlCommand::Local).await;
+                            match r {
+                                Ok(resp) if resp.ok => Ok(resp
+                                    .status
+                                    .map(|s| s.active_target)
+                                    .or(Some(LOCAL_TARGET.into()))),
+                                Ok(resp) => Err(resp.error.unwrap_or_else(|| "local failed".into())),
+                                Err(e) => Err(e.to_string()),
+                            }
+                        }
+                        PeerMessage::Ping => Ok(None),
+                        _ => Ok(None),
                     }
-                    PeerMessage::Clipboard { seq, text } => clip.apply_remote(seq, text),
-                    PeerMessage::Ping => {}
                 }
-            }
-        })
+            },
+            move |incoming| clip_listen.ingest(incoming),
+        )
         .await;
     });
 
@@ -256,6 +291,7 @@ async fn run_client(
     mut layout_file: LayoutFile,
     mut backend: PortalBackend,
     clipboard: Arc<ClipboardBridge>,
+    password: String,
 ) -> anyhow::Result<()> {
     let host_control = args
         .server
@@ -263,27 +299,7 @@ async fn run_client(
         .and_then(peer_channel::control_addr_from_peer);
     clipboard.set_peer(host_control);
 
-    let local_barriers: Vec<_> = layout_file
-        .layout
-        .barriers
-        .iter()
-        .filter(|b| b.from_peer == layout_file.layout.local_peer)
-        .cloned()
-        .collect();
-
-    // On the client: local barriers point to "local" via switch_local to the host.
-    // Rewrite destination to local for the filter; the edge is peer_side.
-    let barriers = if local_barriers.is_empty() {
-        layout_file
-            .layout
-            .barriers
-            .iter()
-            .filter(|b| b.edge == layout_file.peer_side.as_edge())
-            .cloned()
-            .collect::<Vec<_>>()
-    } else {
-        local_barriers
-    };
+    let barriers = client_barriers(&layout_file);
 
     if let Err(e) = backend.register(barriers).await {
         warn!("portal register (client): {e}");
@@ -306,15 +322,16 @@ async fn run_client(
 
     let bind: SocketAddr = format!("0.0.0.0:{CONTROL_PORT}").parse()?;
     let clip_listen = clipboard.clone();
+    let pw = password.clone();
+    let inbox = args.data_dir.join("clip-inbox");
     tokio::spawn(async move {
-        let _ = peer_channel::listen(bind, move |msg, _| {
-            let clip = clip_listen.clone();
-            async move {
-                if let PeerMessage::Clipboard { seq, text } = msg {
-                    clip.apply_remote(seq, text);
-                }
-            }
-        })
+        let _ = peer_channel::listen(
+            bind,
+            pw,
+            Some(inbox),
+            |_msg, _| async { Ok(None) },
+            move |incoming| clip_listen.ingest(incoming),
+        )
         .await;
     });
 
@@ -329,14 +346,7 @@ async fn run_client(
                     layout_mtime = Some(modified);
                     if let Ok(f) = layout_store::load_or_default(&args.data_dir) {
                         layout_file = f;
-                        let barriers: Vec<_> = layout_file
-                            .layout
-                            .barriers
-                            .iter()
-                            .filter(|b| b.from_peer == layout_file.layout.local_peer)
-                            .cloned()
-                            .collect();
-                        if let Err(e) = backend.register(barriers).await {
+                        if let Err(e) = backend.register(client_barriers(&layout_file)).await {
                             warn!("client reload layout: {e}");
                         }
                         write_status(
@@ -358,10 +368,27 @@ async fn run_client(
                     Ok(ev) => {
                         info!("client edge {:?} → switch_local", ev.edge);
                         if let Some(addr) = host_control {
-                            if let Err(e) =
-                                peer_channel::send_to(addr, &PeerMessage::SwitchLocal).await
+                            match peer_channel::send_to(addr, &PeerMessage::SwitchLocal, &password)
+                                .await
                             {
-                                warn!("switch_local: {e}");
+                                Ok(PeerMessage::Ack { ok: true, .. }) => {}
+                                Ok(PeerMessage::Ack {
+                                    ok: false, error, ..
+                                }) => {
+                                    warn!(
+                                        "switch_local rejected: {}",
+                                        error.unwrap_or_else(|| "unknown".into())
+                                    );
+                                    continue;
+                                }
+                                Ok(_) => {
+                                    warn!("switch_local: unexpected peer reply");
+                                    continue;
+                                }
+                                Err(e) => {
+                                    warn!("switch_local: {e}");
+                                    continue;
+                                }
                             }
                         }
                         tokio::time::sleep(Duration::from_millis(350)).await;
@@ -377,4 +404,25 @@ async fn run_client(
         }
     }
     Ok(())
+}
+
+fn client_barriers(layout_file: &LayoutFile) -> Vec<nexus_common::Barrier> {
+    let local_barriers: Vec<_> = layout_file
+        .layout
+        .barriers
+        .iter()
+        .filter(|b| b.from_peer == layout_file.layout.local_peer)
+        .cloned()
+        .collect();
+    if local_barriers.is_empty() {
+        layout_file
+            .layout
+            .barriers
+            .iter()
+            .filter(|b| b.edge == layout_file.peer_side.as_edge())
+            .cloned()
+            .collect()
+    } else {
+        local_barriers
+    }
 }

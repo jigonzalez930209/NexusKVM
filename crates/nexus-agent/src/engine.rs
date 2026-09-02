@@ -75,6 +75,9 @@ impl<B: EdgeCaptureBackend> EdgeEngine<B> {
             return Ok(());
         };
         self.gate = Gate::Switching;
+        if b.activation_delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(b.activation_delay_ms as u64)).await;
+        }
         let entry = entry_for(e.edge, e.normalized_position);
         let r = if b.destination == LOCAL_TARGET {
             self.daemon.send(ControlCommand::Local).await?
