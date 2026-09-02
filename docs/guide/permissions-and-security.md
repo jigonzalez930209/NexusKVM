@@ -132,8 +132,10 @@ NexusKVM is built on the principle of **least privilege**:
 ```
 
 - **GUI Never Runs as Root:** The Tauri 2 window runs as your normal, unprivileged user.
-- **Secure Local IPC:** The frontend talks to the backend daemon over a local Unix domain socket (`/run/nexuskvm.sock` or `$XDG_RUNTIME_DIR/nexuskvm.sock`) with strict `0660` permissions.
-- **Zero Keylogging Invariant:** By design, `nexus-kvmd` **never logs or persists scancodes or key events** in any output stream.
+- **Secure Local IPC:** The frontend and session agent talk to the daemon over a local Unix domain socket (`/run/nexuskvm/control.sock` or `$XDG_RUNTIME_DIR/nexuskvm/control.sock`) with `0660` permissions, a required pairing **token**, and `SO_PEERCRED`.
+- **Network planes:** `:5258` is TLS 1.3 + mTLS + password (input). `:5259` is ChaCha20-Poly1305 AEAD (edge return + clipboard). Never log key codes.
+- **Secrets on disk:** `password`, `key.pem`, `client-key.pem`, and daemon/client TOML are written mode `0600`. The GUI status poll does **not** include the pairing password (`has_password` only). The agent receives the secret via `NEXUSKVM_PASSWORD`, not process argv.
+- **Zero Keylogging Invariant:** `nexus-kvmd` never logs or persists scancodes or key events.
 
 ---
 

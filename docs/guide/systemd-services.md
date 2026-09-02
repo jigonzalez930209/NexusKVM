@@ -16,7 +16,7 @@ NexusKVM can run in two operational modes: **Desktop App Mode** (managed dynamic
                    |                                           |
    - Starts when opening NexusKVM               - Starts automatically on Boot
    - Lives in the system tray                   - Works at the login screen (GDM)
-   - Config in ~/.config/nexuskvm/              - Config in /etc/nexuskvm/
+   - Data in ~/.local/share/nexuskvm/           - Config in /etc/nexuskvm/
 ```
 
 ---

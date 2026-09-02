@@ -19,7 +19,7 @@ NexusKVM defines two primary roles:
 | Role | Description | Running Process |
 | :--- | :--- | :--- |
 | **HOST (Server)** | The workstation with physical input hardware (keyboard and mouse). It captures hardware events and routes them to the active client. | `nexus-kvmd` (daemon) + `nexus-agent` (edge capture) + UI |
-| **CLIENT (Target)** | The remote machine whose screen you want to control. It receives encrypted input events and injects them via a virtual keyboard and mouse. | `rkvm-client` (virtual input runtime `/dev/uinput`) + UI |
+| **CLIENT (Target)** | The remote machine whose screen you want to control. It receives encrypted input events and injects them via a virtual keyboard and mouse. | `rkvm-client` + `nexus-agent` (return edge + clipboard) + UI |
 
 ---
 
@@ -39,8 +39,9 @@ sequenceDiagram
     User->>Host: 2. Click "Copy Pairing Code"
     User->>Client: 3. Launch NexusKVM & select "Connect to another"
     User->>Client: Paste pairing code & click "Connect"
-    Client->>Host: TLS 1.3 handshake on port 5258/tcp
-    Host-->>Client: Connection established & authenticated
+    Client->>Host: TLS 1.3 + mTLS + password on :5258
+    Note over Host,Client: Agents use :5259 (AEAD) for edges and clipboard
+    Host-->>Client: Connection established
 ```
 
 ### Step 1: Configure the Host
@@ -53,7 +54,7 @@ sequenceDiagram
 1. Open NexusKVM on the secondary machine.
 2. Select **Connect to another**.
 3. Paste the code copied from the Host and click **Connect**.
-4. Both machines are now securely paired and synchronized!
+4. Both machines are now paired. Open **5258** and **5259** on the firewall if needed.
 
 ---
 
