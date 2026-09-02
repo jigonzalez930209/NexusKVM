@@ -27,6 +27,7 @@ uuid.workspace = true
 toml.workspace = true
 rkvm-server = { path = "../../rkvm-master/rkvm-server" }
 rkvm-input = { path = "../../rkvm-master/rkvm-input" }
+libc = "0.2"
 
 [dev-dependencies]
 proptest.workspace = true

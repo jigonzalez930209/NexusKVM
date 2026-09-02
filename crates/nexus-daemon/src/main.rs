@@ -88,13 +88,16 @@ async fn main() -> anyhow::Result<()> {
 
     let listen = cfg.rkvm.listen;
     let password = cfg.rkvm.password.clone();
+    if password.is_empty() {
+        anyhow::bail!("daemon password must not be empty");
+    }
     let socket = cfg.socket.clone();
 
     tokio::select! {
         result = server::run(listen, acceptor, &password, &switch_keys, propagate, control, latencies) => {
             result.map_err(|e| anyhow::anyhow!(e))?;
         }
-        result = ipc_server::serve(&socket, controller) => {
+        result = ipc_server::serve(&socket, controller, Some(password.clone())) => {
             result?;
         }
         _ = tokio::signal::ctrl_c() => {

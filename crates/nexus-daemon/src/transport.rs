@@ -63,8 +63,20 @@ impl InputTransport for RkvmAdapter {
         self.latency_map()
     }
 
-    async fn prepare(&self, peer: &PeerId, _: &EntryPoint) -> Result<()> {
-        self.handle.prepare(peer).await.map_err(|e| anyhow!(e))
+    async fn prepare(&self, peer: &PeerId, entry: &EntryPoint) -> Result<()> {
+        let warp = Some((
+            match entry.edge {
+                nexus_common::Edge::Left => 0,
+                nexus_common::Edge::Right => 1,
+                nexus_common::Edge::Top => 2,
+                nexus_common::Edge::Bottom => 3,
+            },
+            entry.normalized_position,
+        ));
+        self.handle
+            .prepare(peer, warp)
+            .await
+            .map_err(|e| anyhow!(e))
     }
 
     async fn activate(&self, peer: &PeerId) -> Result<()> {
