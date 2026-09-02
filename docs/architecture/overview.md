@@ -31,7 +31,7 @@ graph TD
     end
 
     Daemon <===>|TLS 1.3 - 5258/tcp (rkvm-net stream)| RkvmClient
-    Agent <===>|TLS 1.3 - 5259/tcp (Control/Clipboard)| RkvmClient
+    Agent <===>|AEAD ChaCha20-Poly1305 - 5259/tcp (Control/Clipboard)| RkvmClient
 ```
 
 ### 1. `nexus-kvmd` (Host Daemon)
@@ -62,4 +62,5 @@ NexusKVM strictly enforces the following architectural invariants:
 2. **Key Press/Release Destination Coherence:** Every key release event is guaranteed to be dispatched to the destination that received the corresponding key press, preventing modifier keys like <kbd>Shift</kbd>, <kbd>Ctrl</kbd>, or <kbd>Alt</kbd> from getting stuck in remote sessions.
 3. **Zero Keylogging Guarantee:** By design, neither `nexus-kvmd` nor `nexus-agent` ever logs, prints, or persists raw scancodes or key character data.
 4. **GUI Process Isolation:** The desktop UI does not hold file descriptors to raw `evdev` or `/dev/uinput` devices; all actions flow through the strictly governed Unix socket IPC.
-5. **Monotonic Transition Identifiers:** Every focus change generates a unique monotonic transition ID to prevent race conditions during rapid pointer movements.
+6. **Unix control is authenticated:** JSON-Lines on a `0660` socket; token required; `SO_PEERCRED`; no remote shutdown.
+7. **Peer control `:5259` is AEAD:** ChaCha20-Poly1305 + HKDF, timestamp, replay cache; empty secret does not bind the port.
