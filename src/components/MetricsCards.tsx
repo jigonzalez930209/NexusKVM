@@ -101,14 +101,14 @@ export function EngineMetricsCard({
 
 interface AccessTokenCardProps {
   role: Role | null;
-  password: string;
+  hasPassword: boolean;
   remoteServer: string | null;
   onCopyInvite: () => void;
 }
 
 export function AccessTokenCard({
   role,
-  password,
+  hasPassword,
   remoteServer,
   onCopyInvite,
 }: AccessTokenCardProps) {
@@ -128,8 +128,8 @@ export function AccessTokenCard({
       >
         <div className={`token-code ${!tokenRevealed ? 'blurred' : ''}`}>
           {role === 'host'
-            ? password
-              ? password.slice(0, 8) + '...'
+            ? hasPassword
+              ? 'Invite ready — copy to pair'
               : '••••••••'
             : remoteServer || '— no host linked —'}
         </div>

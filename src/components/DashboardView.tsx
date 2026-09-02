@@ -36,7 +36,7 @@ export function DashboardView({
 
         <AccessTokenCard
           role={rt.role}
-          password={rt.password}
+          hasPassword={rt.has_password}
           remoteServer={rt.remote_server}
           onCopyInvite={onCopyInvite}
         />

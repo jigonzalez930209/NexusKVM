@@ -243,7 +243,9 @@ export function TrayControlCenter() {
             <div className="flex-1 min-w-0 bg-surface-container-lowest border border-outline-variant rounded-lg px-4 py-3 flex items-center justify-between font-mono text-on-surface text-sm tracking-widest relative overflow-hidden group">
               <span className="select-all truncate">
                 {rt?.role === 'host'
-                  ? rt?.password || '— not configured —'
+                  ? rt?.has_password
+                    ? 'Invite ready — copy to pair'
+                    : '— not configured —'
                   : rt?.remote_server || '— no host linked —'}
               </span>
               <div className="absolute inset-0 bg-primary/5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"></div>

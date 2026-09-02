@@ -25,7 +25,10 @@ export function EdgePortal() {
       api
         .getPeerSide()
         .then((s) => {
-          const validSide: PeerSide = s === 'left' ? 'left' : 'right';
+          const valid: PeerSide[] = ['left', 'right', 'top', 'bottom'];
+          const validSide: PeerSide = valid.includes(s as PeerSide)
+            ? (s as PeerSide)
+            : 'right';
           setSide(validSide);
           api.positionEdgePortal(validSide).catch(() => {});
         })
@@ -33,7 +36,10 @@ export function EdgePortal() {
 
       api
         .onPeerSideChanged((newSide) => {
-          const validSide: PeerSide = newSide === 'left' ? 'left' : 'right';
+          const valid: PeerSide[] = ['left', 'right', 'top', 'bottom'];
+          const validSide: PeerSide = valid.includes(newSide as PeerSide)
+            ? (newSide as PeerSide)
+            : 'right';
           setSide(validSide);
           api.positionEdgePortal(validSide).catch(() => {});
         })
@@ -50,22 +56,8 @@ export function EdgePortal() {
             leaveTimerRef.current = null;
           }
 
-          if (target !== 'local') {
-            // While on remote PC: keep portal disarmed
-            isArmedRef.current = false;
-            setCanSwitch(false);
-          } else {
-            // Returned to local PC via key combination:
-            // Mouse is resting over this portal window on PC1.
-            // Disarm portal and schedule re-arm 200ms after mouse leaves the edge.
-            isArmedRef.current = false;
-            setCanSwitch(false);
-            leaveTimerRef.current = setTimeout(() => {
-              isArmedRef.current = true;
-              setCanSwitch(true);
-              leaveTimerRef.current = null;
-            }, 200);
-          }
+          isArmedRef.current = false;
+          setCanSwitch(false);
         })
         .then((unlisten) => {
           unlistenTarget = unlisten;
@@ -130,7 +122,6 @@ export function EdgePortal() {
     // do NOT switch to remote! Instead, keep resetting the 200ms timer so it only re-arms
     // 200ms after the mouse stops moving at the edge or leaves into the desktop.
     if (!isArmedRef.current) {
-      scheduleRearm();
       return;
     }
 
