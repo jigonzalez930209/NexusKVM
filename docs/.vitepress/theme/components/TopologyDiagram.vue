@@ -73,7 +73,7 @@
 
           <!-- Clipboard / Control Stream 5259 -->
           <path d="M 320, 200 L 480, 200" stroke="#6366f1" stroke-width="2" stroke-dasharray="3 3" class="anim-flow-reverse" />
-          <text x="400" y="218" text-anchor="middle" fill="#6366f1" font-size="9.5">Port 5259/tcp (Clipboard/Control)</text>
+          <text x="400" y="218" text-anchor="middle" fill="#6366f1" font-size="9.5">Port 5259/tcp AEAD (clipboard / SwitchLocal)</text>
         </g>
 
         <!-- CLIENT MACHINE BOX -->

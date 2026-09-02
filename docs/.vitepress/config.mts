@@ -12,7 +12,7 @@ export default defineConfig({
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/logo.svg' }],
     ['meta', { name: 'theme-color', content: '#0ea5e9' }],
     ['meta', { name: 'og:title', content: 'NexusKVM - Official Documentation' }],
-    ['meta', { name: 'og:description', content: 'Ultra-low latency software KVM for Linux with Wayland, libei, TLS 1.3 encryption, and rkvm fork.' }],
+    ['meta', { name: 'og:description', content: 'Ultra-low latency software KVM for Linux with Wayland, libei, TLS 1.3 input, AEAD agent control, and an rkvm fork.' }],
   ],
 
   themeConfig: {
@@ -41,7 +41,7 @@ export default defineConfig({
         text: '🛡️ Security, Network & Permissions',
         items: [
           { text: 'Linux Permissions (/dev/uinput, udev)', link: '/guide/permissions-and-security' },
-          { text: 'Network, Firewall & TLS 1.3', link: '/guide/firewall-and-network' },
+          { text: 'Network, Firewall & Encryption', link: '/guide/firewall-and-network' },
           { text: 'systemd Services (GDM & Boot)', link: '/guide/systemd-services' },
         ],
       },

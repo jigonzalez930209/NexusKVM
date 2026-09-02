@@ -42,9 +42,9 @@
           </tr>
           <tr>
             <td><strong>nexusctl (CLI)</strong></td>
-            <td><code>/run/nexuskvm.sock</code></td>
-            <td>Read/Write 0660</td>
-            <td>Access via group membership</td>
+            <td><code>/run/nexuskvm/control.sock</code> or <code>$XDG_RUNTIME_DIR/nexuskvm/control.sock</code></td>
+            <td>0660 + pairing token + SO_PEERCRED</td>
+            <td><code>NEXUSKVM_TOKEN</code></td>
             <td><span class="badge badge-user">User / Operator</span></td>
           </tr>
         </tbody>
