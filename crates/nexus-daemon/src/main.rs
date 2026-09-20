@@ -25,8 +25,7 @@ fn default_socket() -> PathBuf {
     PathBuf::from("/run/nexuskvm/control.sock")
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
@@ -48,6 +47,20 @@ async fn main() -> anyhow::Result<()> {
             "realtime unavailable; raised CPU priority via nice"
         ),
     }
+
+    // Boost every worker thread: SCHED_FIFO is per-thread, and the input
+    // routing tasks are the ones that need it.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .on_thread_start(|| {
+            let _ = rkvm_input::priority::boost_thread();
+        })
+        .build()?;
+
+    runtime.block_on(run())
+}
+
+async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
     tracing::info!(config = %args.config.display(), "nexus-kvmd 0.1.0-input2");
     // Deploy marker: postinstall verifies this string so a stale daemon that
@@ -107,6 +120,11 @@ async fn main() -> anyhow::Result<()> {
     }
     let socket = cfg.socket.clone();
 
+    // systemd stops with SIGTERM, not SIGINT: without this the daemon dies
+    // without releasing grabbed input devices / the control socket.
+    #[cfg(unix)]
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+
     tokio::select! {
         result = server::run(listen, acceptor, &password, &switch_keys, propagate, control, latencies) => {
             result.map_err(|e| anyhow::anyhow!(e))?;
@@ -115,7 +133,19 @@ async fn main() -> anyhow::Result<()> {
             result?;
         }
         _ = tokio::signal::ctrl_c() => {
-            tracing::info!("exiting on signal");
+            tracing::info!("exiting on SIGINT");
+        }
+        _ = async {
+            #[cfg(unix)]
+            {
+                sigterm.recv().await;
+            }
+            #[cfg(not(unix))]
+            {
+                std::future::pending::<()>().await;
+            }
+        } => {
+            tracing::info!("exiting on SIGTERM");
         }
     }
     Ok(())

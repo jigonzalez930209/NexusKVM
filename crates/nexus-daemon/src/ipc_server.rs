@@ -16,7 +16,15 @@ pub async fn serve<T: InputTransport + 'static>(
         anyhow::bail!("control socket token required");
     };
     if path.exists() {
-        std::fs::remove_file(path)?;
+        // Refuse to steal a socket that a live daemon is serving: two daemons
+        // sharing input is a split brain (each has its own router state).
+        match UnixStream::connect(path).await {
+            Ok(_) => anyhow::bail!(
+                "control socket {} is already served by another nexus-kvmd",
+                path.display()
+            ),
+            Err(_) => std::fs::remove_file(path)?,
+        }
     }
     let listener = UnixListener::bind(path)?;
     #[cfg(unix)]
@@ -65,12 +73,27 @@ async fn handle<T: InputTransport>(
         return Ok(());
     }
     let (r, mut w) = stream.into_split();
-    let mut lines = BufReader::new(r).lines();
-    while let Some(line) = lines.next_line().await? {
-        if line.len() > 65536 {
+    let mut reader = BufReader::new(r);
+    loop {
+        // Bounded read: the 64 KiB check must happen before the whole line is
+        // buffered, otherwise a local peer can OOM the daemon.
+        let mut buf = Vec::new();
+        let n = {
+            use tokio::io::AsyncReadExt;
+            let mut limited = (&mut reader).take(65536 + 1);
+            limited.read_until(b'\n', &mut buf).await?
+        };
+        if n == 0 {
             break;
         }
-        let req: ControlRequest = match serde_json::from_str(&line) {
+        if buf.len() > 65536 {
+            break;
+        }
+        let line = match std::str::from_utf8(&buf) {
+            Ok(line) => line,
+            Err(_) => break,
+        };
+        let req: ControlRequest = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(e) => {
                 w.write_all(

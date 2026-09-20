@@ -94,14 +94,21 @@ impl<T: InputTransport> Controller<T> {
         }
     }
 
-    async fn ensure_local_transport(&self) {
+    async fn ensure_local_transport(&self) -> bool {
         let active = self.transport.active_target();
         if active != LOCAL_TARGET {
             let _ = self.transport.release_all(None).await;
-            let _ = self.transport.activate_local().await;
+            if let Err(e) = self.transport.activate_local().await {
+                // Never claim Local while input still routes to the remote.
+                tracing::warn!("return to local failed ({e}); transport still on {active}");
+                *self.active_target.write() = active.clone();
+                *self.state.write() = Self::state_for_active(&active);
+                return false;
+            }
         }
         *self.active_target.write() = LOCAL_TARGET.into();
         *self.state.write() = RuntimeState::Local;
+        true
     }
 
     pub async fn sync_target(&self) -> Result<()> {
@@ -274,9 +281,14 @@ impl<T: InputTransport> Controller<T> {
         self.mark_transition();
         *self.active_target.write() = active.clone();
         *self.state.write() = Self::state_for_active(&active);
-        if active == before && active == LOCAL_TARGET {
-            tracing::warn!(connected, "next: no connected peer to switch to");
-            bail!("no connected peer to switch to");
+        if active == before {
+            if active == LOCAL_TARGET {
+                tracing::warn!(connected, "next: no connected peer to switch to");
+                bail!("no connected peer to switch to");
+            }
+            // Cycling with a single peer can land on the same target: report a
+            // no-op instead of a transition that never happened.
+            return Ok(Uuid::nil());
         }
         tracing::info!(from = %before, to = %active, connected, "next: target cycled");
         Ok(Uuid::new_v4())
