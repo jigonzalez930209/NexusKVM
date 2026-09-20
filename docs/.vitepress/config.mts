@@ -1,7 +1,12 @@
 import { defineConfig } from 'vitepress';
 
+// GitHub Pages project site lives under /NexusKVM/. Head tags are emitted
+// verbatim (no base prefixing), so the favicon must be built from `base`
+// explicitly or it 404s at the domain root.
+const base = '/NexusKVM/';
+
 export default defineConfig({
-  base: '/NexusKVM/',
+  base,
   title: 'NexusKVM',
   description: 'Official NexusKVM Documentation - Modern Software KVM for Linux with Tauri 2, Rust, and rkvm 0.6.1 fork',
   lang: 'en-US',
@@ -9,7 +14,9 @@ export default defineConfig({
   cleanUrls: true,
 
   head: [
-    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/logo.svg' }],
+    ['link', { rel: 'icon', type: 'image/svg+xml', href: `${base}logo.svg` }],
+    ['link', { rel: 'icon', type: 'image/png', href: `${base}icon.png` }],
+    ['link', { rel: 'apple-touch-icon', href: `${base}icon.png` }],
     ['meta', { name: 'theme-color', content: '#0ea5e9' }],
     ['meta', { name: 'og:title', content: 'NexusKVM - Official Documentation' }],
     ['meta', { name: 'og:description', content: 'Ultra-low latency software KVM for Linux with Wayland, libei, TLS 1.3 input, AEAD agent control, and an rkvm fork.' }],
