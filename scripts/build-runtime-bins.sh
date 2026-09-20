@@ -31,6 +31,10 @@ if ! setup_libevdev; then
   echo "libevdev.pc not found (the runtime package is not enough)." >&2
   echo "Install: sudo apt install libevdev-dev libclang-dev" >&2
   echo "Or place a libevdev.pc in ~/.local/pkgconfig and retry." >&2
+  if [[ "${PROFILE}" == "release" ]]; then
+    echo "release packaging requires a real build; aborting." >&2
+    exit 1
+  fi
   if [[ -x "target/${PROFILE}/nexus-kvmd" ]]; then
     echo "Continuing with binaries already built in target/${PROFILE}." >&2
   else
@@ -47,9 +51,15 @@ mkdir -p src-tauri/binaries
 stage() {
   local src="$1"
   local name="$2"
-  if [[ -x "${src}" ]]; then
-    cp -f "${src}" "src-tauri/binaries/${name}-${TRIPLE}"
-    chmod +x "src-tauri/binaries/${name}-${TRIPLE}"
+  local dest="src-tauri/binaries/${name}-${TRIPLE}"
+  if [[ ! -x "${src}" ]]; then
+    echo "missing built binary: ${src}" >&2
+    exit 1
+  fi
+  install -m755 "${src}" "${dest}"
+  if ! cmp -s "${src}" "${dest}"; then
+    echo "staged sidecar mismatch: ${dest}" >&2
+    exit 1
   fi
 }
 

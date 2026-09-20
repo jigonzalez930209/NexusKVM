@@ -30,13 +30,14 @@ BIN_DIR=/usr/libexec/nexuskvm
 install -d -m 0750 "$LIB"
 install -d -m 0755 "$BIN_DIR"
 
-# Prefer packaged binaries; fall back to PATH for development installs.
+# Prefer the packaged /usr/bin binaries (always fresh after an upgrade); fall
+# back to the libexec mirror and PATH for development installs.
 copy_bin() {
   name="$1"
   dest="$BIN_DIR/$name"
   for candidate in \
-    "/usr/libexec/nexuskvm/$name" \
     "/usr/bin/$name" \
+    "/usr/libexec/nexuskvm/$name" \
     "$(command -v "$name" 2>/dev/null || true)"; do
     if [ -n "$candidate" ] && [ -x "$candidate" ]; then
       if [ "$candidate" != "$dest" ]; then
@@ -95,6 +96,7 @@ if [ "$ROLE" = host ]; then
 socket = "/run/nexuskvm/control.sock"
 listen = "0.0.0.0:5258"
 switch-keys = ["left-alt", "left-ctrl"]
+propagate-switch-keys = false
 certificate = "$LIB/certificate.pem"
 key = "$LIB/key.pem"
 password = "$PASS"
@@ -120,9 +122,20 @@ else
   if [ -z "$PASS" ] && [ -f "$LIB/password" ]; then
     PASS=$(tr -d '\n' <"$LIB/password")
   fi
+  # Preserve mTLS client identity when the UI generated one (required by host).
+  CLIENT_CERT_LINE=
+  CLIENT_KEY_LINE=
+  if [ -f "$SRC/client-cert.pem" ] && [ -f "$SRC/client-key.pem" ]; then
+    install -m 0640 -o root -g input "$SRC/client-cert.pem" "$LIB/client-cert.pem"
+    install -m 0600 -o root -g root "$SRC/client-key.pem" "$LIB/client-key.pem"
+    CLIENT_CERT_LINE="client-certificate = \"$LIB/client-cert.pem\""
+    CLIENT_KEY_LINE="client-key = \"$LIB/client-key.pem\""
+  fi
   cat >"$LIB/client.toml" <<EOF
 server = "$SERVER"
 certificate = "$LIB/certificate.pem"
+$CLIENT_CERT_LINE
+$CLIENT_KEY_LINE
 password = "$PASS"
 EOF
   chgrp input "$LIB/client.toml" 2>/dev/null || true

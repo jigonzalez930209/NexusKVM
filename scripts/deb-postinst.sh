@@ -95,8 +95,10 @@ EOF
 EOF
 }
 
-case "$1" in
-  configure)
+# Debian calls the postinst with "configure"; RPM scriptlets pass the package
+# count ("1" install, "2" upgrade) or nothing.
+case "${1:-configure}" in
+  configure|1|2|install|upgrade|"")
     user=
     if user=$(install_user); then
       add_input_group "$user"
@@ -105,12 +107,18 @@ case "$1" in
     fi
     setup_uinput
     setup_firewall
-    if [ -f /usr/libexec/nexuskvm/nexuskvm-enable-boot.sh ]; then
-      chmod 0755 /usr/libexec/nexuskvm/nexuskvm-enable-boot.sh || true
+
+    # Mandatory: sync binaries, kill stale processes, restart services and
+    # verify deploy markers. Any strict failure aborts the package install so
+    # a half-updated (broken switching) installation cannot happen silently.
+    APPLY=/usr/libexec/nexuskvm/nexuskvm-runtime-apply.sh
+    if [ -f "$APPLY" ]; then
+      /bin/sh "$APPLY"
+    else
+      log "ERROR: $APPLY missing; cannot guarantee a consistent runtime"
+      exit 1
     fi
-    if command -v systemctl >/dev/null 2>&1; then
-      systemctl daemon-reload || true
-    fi
+
     print_notice "$user"
     ;;
 esac
