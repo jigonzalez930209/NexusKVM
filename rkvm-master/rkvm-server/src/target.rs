@@ -5,6 +5,12 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 pub const LOCAL_TARGET: &str = "local";
 
+/// Minimum inward travel (px) the remote pointer must accumulate before a
+/// peer-initiated return is accepted. Without it, a REL-only host leaves the
+/// remote cursor parked on the remote portal pixel and the peer bounces
+/// control back the instant the user nudges the mouse (Barrier-style bounce).
+pub const REMOTE_RETURN_MIN_PX: f32 = 60.0;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerSnapshot {
     pub id: String,
@@ -65,6 +71,8 @@ pub struct TargetRouter {
     /// exactly on the portal pixel and re-trigger the switch.
     return_edge: Option<u8>,
     pending_local_warp: Option<u8>,
+    /// Inward pointer travel accumulated while the remote owns input.
+    remote_inward_px: f32,
 }
 
 impl Default for TargetRouter {
@@ -87,6 +95,7 @@ impl TargetRouter {
             pending_warp: None,
             return_edge: None,
             pending_local_warp: None,
+            remote_inward_px: 0.0,
         }
     }
 
@@ -185,6 +194,33 @@ impl TargetRouter {
         self.pending_local_warp.take()
     }
 
+    /// Accumulate relative pointer travel while a peer owns input, counting
+    /// only movement away from the entry edge.
+    pub fn note_remote_motion(&mut self, dx: i32, dy: i32) {
+        if self.active == LOCAL_TARGET {
+            return;
+        }
+        let inward = match self.return_edge {
+            Some(0) => -dx as f32, // host left edge -> remote enters at right
+            Some(1) => dx as f32,  // host right edge -> remote enters at left
+            Some(2) => -dy as f32, // host top edge -> remote enters at bottom
+            Some(3) => dy as f32,  // host bottom edge -> remote enters at top
+            _ => 0.0,
+        };
+        if inward > 0.0 {
+            self.remote_inward_px += inward;
+        }
+    }
+
+    /// A return request coming from the peer is only honored once the remote
+    /// pointer has actually traveled into its desktop: otherwise it is the
+    /// portal pixel the cursor landed on, not a deliberate crossing.
+    pub fn peer_return_allowed(&self) -> bool {
+        // Without a recorded crossing edge (e.g. chord switch) there is no
+        // portal pixel to bounce off: accept the peer's return.
+        self.return_edge.is_none() || self.remote_inward_px >= REMOTE_RETURN_MIN_PX
+    }
+
     fn connected(&self, id: &str) -> bool {
         self.peers.get(id).map(|p| p.connected).unwrap_or(false)
     }
@@ -222,6 +258,8 @@ impl TargetRouter {
         self.previous = self.active.clone();
         self.active = id.to_string();
         self.chord_changed = from_chord;
+        // Fresh entry: the remote pointer starts at its edge again.
+        self.remote_inward_px = 0.0;
         let t = self.alloc_transition();
         self.busy = false;
         Ok(t)
@@ -232,6 +270,18 @@ impl TargetRouter {
     }
 
     pub fn switch_local(&mut self) -> Result<TransitionId, TargetError> {
+        self.apply_local(false)
+    }
+
+    /// Return request originated by the peer's edge portal.
+    pub fn switch_local_from_peer(&mut self) -> Result<TransitionId, TargetError> {
+        if self.active != LOCAL_TARGET && !self.peer_return_allowed() {
+            tracing::info!(
+                inward_px = self.remote_inward_px,
+                "peer return contained: cursor has not left the remote edge yet"
+            );
+            return Ok(self.alloc_transition());
+        }
         self.apply_local(false)
     }
 
@@ -252,6 +302,7 @@ impl TargetRouter {
         // so the very next motion event is not another crossing.
         self.pending_local_warp = self.return_edge.take();
         self.pending_warp = None;
+        self.remote_inward_px = 0.0;
         if !from_chord {
             self.held_keys.clear();
         }
@@ -330,6 +381,11 @@ enum Command {
     Local {
         reply: oneshot::Sender<Result<TransitionId, TargetError>>,
     },
+    /// Like `Local`, but requested by the peer's edge portal: contains the
+    /// bounce when the remote cursor has not moved away from its edge.
+    LocalFromPeer {
+        reply: oneshot::Sender<Result<TransitionId, TargetError>>,
+    },
     ReleaseAll {
         peer: Option<String>,
         reply: oneshot::Sender<Result<Vec<(Key, String)>, TargetError>>,
@@ -390,6 +446,18 @@ impl PendingCommand {
             Command::Local { reply } => {
                 let keys = router.drain_held();
                 let _ = reply.send(router.switch_local());
+                Applied { keys, warp: None }
+            }
+            Command::LocalFromPeer { reply } => {
+                let before = router.active_target().to_string();
+                let result = router.switch_local_from_peer();
+                // Only drain held keys when the return actually happened.
+                let keys = if router.active_target() != before {
+                    router.drain_held()
+                } else {
+                    Vec::new()
+                };
+                let _ = reply.send(result);
                 Applied { keys, warp: None }
             }
             Command::ReleaseAll { peer, reply } => {
@@ -463,6 +531,15 @@ impl TargetHandle {
         let (reply, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::Local { reply })
+            .await
+            .map_err(|_| TargetError::Closed)?;
+        rx.await.map_err(|_| TargetError::Closed)?
+    }
+
+    pub async fn local_from_peer(&self) -> Result<TransitionId, TargetError> {
+        let (reply, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(Command::LocalFromPeer { reply })
             .await
             .map_err(|_| TargetError::Closed)?;
         rx.await.map_err(|_| TargetError::Closed)?
@@ -684,6 +761,35 @@ mod tests {
             Some(LOCAL_TARGET.to_string())
         );
         assert_eq!(c.note_key(Key::Key(Keyboard::A), false), None);
+    }
+
+    #[test]
+    fn peer_return_contained_until_inward_travel() {
+        let mut c = fixture_with_peer("b", true);
+        // Remote entry edge 0 (left) => the host crossed its right edge.
+        c.prepare("b", Some((0, 0.5))).unwrap();
+        c.switch_to("b").unwrap();
+        // Pushing further toward the remote edge is not inward travel.
+        c.note_remote_motion(-10, 0);
+        assert!(!c.peer_return_allowed());
+        c.switch_local_from_peer().unwrap();
+        assert_eq!(c.active_target(), "b", "bounce must be contained");
+        // Enough inward travel (rightward) unlocks the deliberate return.
+        c.note_remote_motion(80, 0);
+        assert!(c.peer_return_allowed());
+        c.switch_local_from_peer().unwrap();
+        assert_eq!(c.active_target(), LOCAL_TARGET);
+    }
+
+    #[test]
+    fn peer_return_allowed_after_chord_switch_without_edge() {
+        let mut c = fixture_with_peer("b", true);
+        c.switch_next().unwrap();
+        c.finish_chord();
+        assert_eq!(c.active_target(), "b");
+        assert!(c.peer_return_allowed());
+        c.switch_local_from_peer().unwrap();
+        assert_eq!(c.active_target(), LOCAL_TARGET);
     }
 
     #[tokio::test]
