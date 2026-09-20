@@ -21,6 +21,20 @@ export function EdgePortal() {
     let unlistenTarget: (() => void) | undefined;
 
     if (inTauri()) {
+      // Seed the authoritative ownership state before arming: if the app
+      // starts (or reloads) while another machine owns control, the portal
+      // must stay disarmed until `local` is reported again.
+      api
+        .status()
+        .then((st) => {
+          const target = st.active_target || 'local';
+          activeTargetRef.current = target;
+          const armed = target === 'local';
+          isArmedRef.current = armed;
+          setCanSwitch(armed);
+        })
+        .catch(() => {});
+
       // Sync layout edge position
       api
         .getPeerSide()
@@ -129,13 +143,23 @@ export function EdgePortal() {
   async function handleTrigger(e: React.MouseEvent | React.PointerEvent) {
     const now = Date.now();
 
+    // Hard ownership gate: while another machine owns control, an edge event
+    // must never be forwarded. Covers missed `target-changed` events (stale
+    // ref) on top of the daemon-side containment window.
+    if (activeTargetRef.current !== 'local') {
+      return;
+    }
+
     // If portal is disarmed (e.g. mouse just returned to local PC and is still over the portal),
     // do NOT switch to remote! Instead, keep resetting the 200ms timer so it only re-arms
     // 200ms after the mouse stops moving at the edge or leaves into the desktop.
     if (!isArmedRef.current) {
       // Safety re-arm: if we are back on local but the target event was missed
       // or arrived out of order, never stay stuck disarmed forever.
-      if (activeTargetRef.current === 'local' && now - lastTriggerRef.current > 1500) {
+      if (
+        activeTargetRef.current === 'local' &&
+        now - lastTriggerRef.current > 1500
+      ) {
         isArmedRef.current = true;
         setCanSwitch(true);
       } else {
