@@ -45,6 +45,49 @@ impl<T: DeserializeOwned + Serialize + Sync> Message for T {
     }
 }
 
+/// Cancel-safe frame decoder.
+///
+/// `Message::decode` performs two awaited reads; dropping the future between
+/// them would silently eat bytes and desynchronize the stream, which is fatal
+/// when the read sits in a `tokio::select!` racing timers. This decoder keeps
+/// partially received frames in an internal buffer and only consumes bytes
+/// once a whole frame is available.
+#[derive(Default)]
+pub struct FrameDecoder {
+    buf: Vec<u8>,
+}
+
+impl FrameDecoder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn recv<T: DeserializeOwned, R: AsyncRead + Send + Unpin>(
+        &mut self,
+        stream: &mut R,
+    ) -> Result<T, Error> {
+        loop {
+            if self.buf.len() >= 2 {
+                let length = u16::from_be_bytes([self.buf[0], self.buf[1]]) as usize;
+                if self.buf.len() >= 2 + length {
+                    let data = &self.buf[2..2 + length];
+                    let msg = options()
+                        .deserialize(data)
+                        .map_err(|err| Error::new(ErrorKind::InvalidData, err))?;
+                    self.buf.drain(..2 + length);
+                    tracing::trace!("Read {} bytes", 2 + length);
+                    return Ok(msg);
+                }
+            }
+
+            let read = stream.read_buf(&mut self.buf).await?;
+            if read == 0 {
+                return Err(Error::new(ErrorKind::UnexpectedEof, "stream closed"));
+            }
+        }
+    }
+}
+
 fn options() -> impl Options {
     DefaultOptions::new().with_limit(u16::MAX.into())
 }

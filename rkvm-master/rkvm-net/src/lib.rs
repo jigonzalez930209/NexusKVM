@@ -49,11 +49,23 @@ pub enum Update {
         id: usize,
         event: Event,
     },
+    /// Ownership handshake: the client must apply every prior update, then
+    /// answer with `ClientEvent::Ready { epoch }`. A switch that is never
+    /// confirmed reverts to local.
+    TakeControl {
+        epoch: u64,
+    },
     Ping,
 }
 
+/// Messages the client is allowed to send back. A single enum is used so the
+/// server can always read from the socket in a well-defined order (a bare
+/// `Pong` stream could be desynchronized by an out-of-band `Ready`).
 #[derive(Deserialize, Serialize, Debug)]
-pub struct Pong;
+pub enum ClientEvent {
+    Pong,
+    Ready { epoch: u64 },
+}
 
 pub async fn timeout<T: Future<Output = Result<U, Error>>, U>(
     duration: Duration,
@@ -70,10 +82,14 @@ mod test {
     use super::*;
 
     #[tokio::test]
-    async fn pong_is_not_empty() {
-        let mut data = Vec::new();
-        Pong.encode(&mut data).await.unwrap();
+    async fn client_events_encode_with_distinct_lengths() {
+        let mut pong = Vec::new();
+        ClientEvent::Pong.encode(&mut pong).await.unwrap();
 
-        assert!(!data.is_empty());
+        let mut ready = Vec::new();
+        ClientEvent::Ready { epoch: 7 }.encode(&mut ready).await.unwrap();
+
+        assert!(!pong.is_empty());
+        assert_ne!(pong, ready);
     }
 }
