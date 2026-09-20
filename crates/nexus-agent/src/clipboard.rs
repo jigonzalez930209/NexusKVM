@@ -1,4 +1,4 @@
-use crate::peer_channel::{self, ClipKind, ClipOut, IncomingClip};
+use crate::peer_channel::{self, ClipKind, ClipOut, IncomingClip, PeerMessage};
 use arboard::{Clipboard, ImageData};
 use std::{
     borrow::Cow,
@@ -9,11 +9,21 @@ use std::{
         Arc, Mutex,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tracing::{debug, info, warn};
 
-const SEND_TIMEOUT: Duration = Duration::from_secs(600);
+const SEND_TIMEOUT: Duration = Duration::from_secs(30);
+/// After a failed send the same clipboard content is retried with exponential
+/// backoff instead of hammering the peer every poll tick.
+const RETRY_BASE: Duration = Duration::from_secs(2);
+const RETRY_MAX: Duration = Duration::from_secs(60);
+
+struct SendGate {
+    fp: String,
+    fails: u32,
+    next_try: Instant,
+}
 
 enum LocalSnap {
     Empty,
@@ -101,6 +111,7 @@ impl ClipboardBridge {
         let secret = Arc::clone(&self.secret);
         let sending = Arc::clone(&self.sending);
         let inbox = self.inbox.clone();
+        let gate: Arc<Mutex<Option<SendGate>>> = Arc::new(Mutex::new(None));
         let handle = tokio::runtime::Handle::current();
 
         thread::Builder::new()
@@ -134,11 +145,22 @@ impl ClipboardBridge {
                     let Some(pw) = secret.lock().unwrap().clone() else {
                         continue;
                     };
-                    let snap = read_snap(&mut clip);
+                    let snap = read_snap(&mut clip, &inbox);
                     let fp = fingerprint(&snap, &inbox);
+                    if fp.is_empty() {
+                        continue;
+                    }
+                    // Same payload failing repeatedly backs off instead of
+                    // retrying every poll tick (which spammed the peer and the
+                    // log when the peer ran an incompatible agent).
+                    if let Some(g) = gate.lock().unwrap().as_ref() {
+                        if g.fp == fp && Instant::now() < g.next_try {
+                            continue;
+                        }
+                    }
                     let prev = {
                         let mut last = last_fp.lock().unwrap();
-                        if fp.is_empty() || *last == fp {
+                        if *last == fp {
                             continue;
                         }
                         let prev = last.clone();
@@ -153,24 +175,49 @@ impl ClipboardBridge {
                     sending.store(true, Ordering::SeqCst);
                     let sending2 = Arc::clone(&sending);
                     let last_fp2 = Arc::clone(&last_fp);
+                    let gate2 = Arc::clone(&gate);
                     handle.spawn(async move {
                         let send = peer_channel::send_clip(addr, &pw, &out);
+                        let mut failure: Option<String> = None;
                         match tokio::time::timeout(SEND_TIMEOUT, send).await {
-                            Ok(Ok(ack)) => info!("clipboard sent → {addr}: {desc} ({ack:?})"),
-                            Ok(Err(e)) => {
-                                warn!("clipboard send failed → {addr}: {e}");
-                                let mut g = last_fp2.lock().unwrap();
-                                if *g == fp {
-                                    *g = prev;
-                                }
+                            Ok(Ok(PeerMessage::Ack { ok: true, .. })) => {
+                                info!("clipboard sent → {addr}: {desc}");
                             }
-                            Err(_) => {
-                                warn!("clipboard send timed out → {addr}");
-                                let mut g = last_fp2.lock().unwrap();
-                                if *g == fp {
-                                    *g = prev;
-                                }
+                            Ok(Ok(PeerMessage::Ack {
+                                ok: false, error, ..
+                            })) => {
+                                failure = Some(format!(
+                                    "peer rejected clipboard: {}",
+                                    error.unwrap_or_else(|| "unknown".into())
+                                ));
                             }
+                            Ok(Ok(other)) => {
+                                failure = Some(format!("unexpected clip reply: {other:?}"));
+                            }
+                            Ok(Err(e)) => failure = Some(e.to_string()),
+                            Err(_) => failure = Some("send timed out".into()),
+                        }
+                        if let Some(reason) = failure {
+                            warn!("clipboard send failed → {addr}: {reason}");
+                            let mut g = last_fp2.lock().unwrap();
+                            if *g == fp {
+                                *g = prev;
+                            }
+                            let mut gate = gate2.lock().unwrap();
+                            let fails = gate
+                                .as_ref()
+                                .filter(|g| g.fp == fp)
+                                .map(|g| g.fails + 1)
+                                .unwrap_or(1);
+                            let backoff =
+                                (RETRY_BASE * 2u32.saturating_pow(fails - 1)).min(RETRY_MAX);
+                            *gate = Some(SendGate {
+                                fp,
+                                fails,
+                                next_try: Instant::now() + backoff,
+                            });
+                        } else {
+                            *gate2.lock().unwrap() = None;
                         }
                         sending2.store(false, Ordering::SeqCst);
                     });
@@ -180,7 +227,7 @@ impl ClipboardBridge {
     }
 }
 
-fn read_snap(clip: &mut Clipboard) -> LocalSnap {
+fn read_snap(clip: &mut Clipboard, inbox: &Path) -> LocalSnap {
     // Prefer real image payloads over a single screenshot file path so paste
     // lands as an image on the peer (Nautilus/GIMP/etc. expect image/png).
     if let Ok(img) = clip.get().image() {
@@ -194,7 +241,10 @@ fn read_snap(clip: &mut Clipboard) -> LocalSnap {
     }
     if let Ok(files) = clip.get().file_list() {
         if !files.is_empty() {
-            if files.len() == 1 {
+            // Never convert a received inbox image back into an image payload:
+            // that echoed the transferred file back as PNG and replaced the
+            // original file-list clipboard on the sender.
+            if files.len() == 1 && !files[0].starts_with(inbox) {
                 if let Some(img) = image_snap_from_path(&files[0]) {
                     return img;
                 }
@@ -204,7 +254,7 @@ fn read_snap(clip: &mut Clipboard) -> LocalSnap {
     }
     if let Ok(text) = clip.get_text() {
         if let Some(paths) = parse_uri_list(&text) {
-            if paths.len() == 1 {
+            if paths.len() == 1 && !paths[0].starts_with(inbox) {
                 if let Some(img) = image_snap_from_path(&paths[0]) {
                     return img;
                 }

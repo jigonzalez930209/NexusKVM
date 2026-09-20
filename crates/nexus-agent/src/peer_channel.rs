@@ -286,12 +286,30 @@ async fn read_signed_line(
     let mut reply = String::new();
     lines.read_line(&mut reply).await?;
     if reply.is_empty() {
-        bail!("peer control closed without ack");
+        bail!(
+            "peer control closed without ack (peer agent outdated or not speaking the \
+             AEAD protocol; restart/reinstall nexus-agent on the peer)"
+        );
     }
     if reply.len() > LINE_MAX {
         bail!("peer line too large");
     }
-    let env: AeadEnvelope = serde_json::from_str(&reply)?;
+    let env: AeadEnvelope = match serde_json::from_str(&reply) {
+        Ok(env) => env,
+        Err(e) => {
+            // A plain (unencrypted) reply means the peer runs a different
+            // protocol revision; surface its message instead of a parse dump.
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&reply) {
+                let detail = v
+                    .get("error")
+                    .and_then(|x| x.as_str())
+                    .or_else(|| v.get("type").and_then(|x| x.as_str()))
+                    .unwrap_or("unknown");
+                bail!("peer protocol mismatch: {detail}");
+            }
+            return Err(e.into());
+        }
+    };
     decode_msg(password, &env)
 }
 
@@ -695,24 +713,32 @@ where
     let (r, mut w) = stream.into_split();
     let mut reader = BufReader::new(r);
     loop {
-        let mut line = String::new();
-        let n = reader.read_line(&mut line).await?;
+        // Bounded read before authentication: an unauthenticated remote peer
+        // must not be able to grow the line buffer without limit.
+        let mut line = Vec::new();
+        let n = {
+            let mut limited = (&mut reader).take(LINE_MAX as u64 + 1);
+            limited.read_until(b'\n', &mut line).await?
+        };
         if n == 0 {
             break;
         }
         if line.len() > LINE_MAX {
             warn!("peer message too large from {peer}");
+            let _ = protocol_error(&mut w, "peer line too large").await;
             break;
         }
-        let env: AeadEnvelope = match serde_json::from_str(&line) {
+        let env: AeadEnvelope = match serde_json::from_slice(&line) {
             Ok(v) => v,
             Err(e) => {
                 warn!("peer parse error from {peer}: {e}");
+                let _ = protocol_error(&mut w, "peer protocol mismatch").await;
                 break;
             }
         };
         if replay.lock().unwrap().check(&env).is_err() {
             warn!("peer replay from {peer}");
+            let _ = protocol_error(&mut w, "replayed peer message").await;
             break;
         }
         let msg = match decode_msg(&password, &env) {
@@ -790,6 +816,17 @@ async fn write_outcome(
         },
     };
     write_signed(w, password, &ack).await
+}
+
+/// Best-effort plain-text error for peers whose AEAD envelope we could not
+/// even parse: a silent close is undiagnosable, this at least names the issue.
+async fn protocol_error(w: &mut (impl AsyncWriteExt + Unpin), error: &str) -> Result<()> {
+    let line = serde_json::json!({ "type": "protocol_error", "error": error });
+    w.write_all(serde_json::to_string(&line)?.as_bytes())
+        .await?;
+    w.write_all(b"\n").await?;
+    w.flush().await?;
+    Ok(())
 }
 
 fn msg_kind(m: &PeerMessage) -> &'static str {

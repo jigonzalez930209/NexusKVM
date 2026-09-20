@@ -7,7 +7,7 @@ use nexus_agent::{
 };
 use nexus_common::{ControlCommand, LayoutFile, PeerSide, PeerStatus, LOCAL_TARGET};
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Clone, Copy, ValueEnum)]
 enum Role {
@@ -70,24 +70,24 @@ async fn main() -> anyhow::Result<()> {
     let clipboard = Arc::new(ClipboardBridge::new(inbox));
     clipboard.set_secret(password.clone());
     clipboard.spawn_watch();
+    // Probed once: creating a Clipboard every poll tick is expensive and the
+    // answer only changes when the session itself changes.
+    let clipboard_ok = clipboard::clipboard_ok();
+    // Deploy marker: compare this line on both machines before chasing
+    // clipboard bugs — a mismatch restarts nothing and silently drops clips.
+    info!("peer protocol: aead-v1 (envelope n/t/c, clip chunks, ready ack)");
 
     // The InputCapture portal is intentionally not used. On GNOME/Mutter it is
     // part of the same "remote access" machinery as screen casting, so any
     // active session makes GNOME show its screen-capture indicator. Both roles
     // switch through the X11 edge strip in the UI instead.
-    write_status(
-        &args.data_dir,
-        false,
-        None,
-        &layout_file,
-        clipboard::clipboard_ok(),
-    );
+    write_status(&args.data_dir, false, None, &layout_file, clipboard_ok);
 
     info!("edge-strip mode: InputCapture portal disabled");
 
     match args.role {
-        Role::Host => run_host(args, layout_file, clipboard, password).await,
-        Role::Client => run_client(args, layout_file, clipboard, password).await,
+        Role::Host => run_host(args, layout_file, clipboard, password, clipboard_ok).await,
+        Role::Client => run_client(args, layout_file, clipboard, password, clipboard_ok).await,
     }
 }
 
@@ -120,6 +120,7 @@ async fn run_host(
     mut layout_file: LayoutFile,
     clipboard: Arc<ClipboardBridge>,
     password: String,
+    clipboard_ok: bool,
 ) -> anyhow::Result<()> {
     let daemon = DaemonClient {
         socket: args.socket.clone(),
@@ -192,13 +193,7 @@ async fn run_host(
                     if let Ok(f) = layout_store::load_or_default(&args.data_dir) {
                         layout_file = f;
                         info!("layout reloaded ({:?})", layout_file.peer_side);
-                        write_status(
-                            &args.data_dir,
-                            false,
-                            None,
-                            &layout_file,
-                            clipboard::clipboard_ok(),
-                        );
+                        write_status(&args.data_dir, false, None, &layout_file, clipboard_ok);
                     }
                 }
             }
@@ -216,7 +211,10 @@ async fn run_host(
                     clipboard.set_peer(peer_channel::control_addr_from_peer(&p.address));
                     if layout_file.remote_peer.as_deref() != Some(p.id.as_str()) {
                         layout_file = layout_file.with_remote(&p.id);
-                        layout_store::save(&args.data_dir, &layout_file)?;
+                        // A transient write failure must not kill the agent.
+                        if let Err(e) = layout_store::save(&args.data_dir, &layout_file) {
+                            warn!("layout save failed: {e}");
+                        }
                     }
                 } else {
                     clipboard.set_peer(None);
@@ -229,6 +227,8 @@ async fn run_host(
                     .await;
             }
         }
+        // Keep the UI's copy fresh (peer_side / clipboard availability).
+        write_status(&args.data_dir, false, None, &layout_file, clipboard_ok);
 
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(2)) => {}
@@ -246,6 +246,7 @@ async fn run_client(
     mut layout_file: LayoutFile,
     clipboard: Arc<ClipboardBridge>,
     password: String,
+    clipboard_ok: bool,
 ) -> anyhow::Result<()> {
     let host_control = args
         .server
@@ -256,13 +257,7 @@ async fn run_client(
     // Return-to-host switching goes through the UI's X11 edge strip
     // (switch_edge → peer SwitchLocal). No InputCapture portal session is
     // registered: GNOME/Mutter ties it to the screen-capture indicator.
-    write_status(
-        &args.data_dir,
-        false,
-        None,
-        &layout_file,
-        clipboard::clipboard_ok(),
-    );
+    write_status(&args.data_dir, false, None, &layout_file, clipboard_ok);
 
     let bind: SocketAddr = format!("0.0.0.0:{CONTROL_PORT}").parse()?;
     let clip_listen = clipboard.clone();
@@ -290,17 +285,13 @@ async fn run_client(
                     layout_mtime = Some(modified);
                     if let Ok(f) = layout_store::load_or_default(&args.data_dir) {
                         layout_file = f;
-                        write_status(
-                            &args.data_dir,
-                            false,
-                            None,
-                            &layout_file,
-                            clipboard::clipboard_ok(),
-                        );
+                        write_status(&args.data_dir, false, None, &layout_file, clipboard_ok);
                     }
                 }
             }
         }
+
+        write_status(&args.data_dir, false, None, &layout_file, clipboard_ok);
 
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(2)) => {}
