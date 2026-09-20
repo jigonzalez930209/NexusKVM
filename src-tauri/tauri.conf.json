@@ -95,7 +95,8 @@
           "/usr/share/doc/nexuskvm/POSTINSTALL.txt": "../packaging/POSTINSTALL.txt",
           "/usr/lib/systemd/system/nexuskvm-host.service": "../systemd/nexuskvm-host.service",
           "/usr/lib/systemd/system/nexuskvm-client.service": "../systemd/nexuskvm-client.service",
-          "/usr/libexec/nexuskvm/nexuskvm-enable-boot.sh": "../scripts/nexuskvm-enable-boot.sh"
+          "/usr/libexec/nexuskvm/nexuskvm-enable-boot.sh": "../scripts/nexuskvm-enable-boot.sh",
+          "/usr/libexec/nexuskvm/nexuskvm-runtime-apply.sh": "../scripts/nexuskvm-runtime-apply.sh"
         },
         "postInstallScript": "../scripts/deb-postinst.sh"
       },
@@ -112,8 +113,10 @@
           "/usr/share/doc/nexuskvm/POSTINSTALL.txt": "../packaging/POSTINSTALL.txt",
           "/usr/lib/systemd/system/nexuskvm-host.service": "../systemd/nexuskvm-host.service",
           "/usr/lib/systemd/system/nexuskvm-client.service": "../systemd/nexuskvm-client.service",
-          "/usr/libexec/nexuskvm/nexuskvm-enable-boot.sh": "../scripts/nexuskvm-enable-boot.sh"
-        }
+          "/usr/libexec/nexuskvm/nexuskvm-enable-boot.sh": "../scripts/nexuskvm-enable-boot.sh",
+          "/usr/libexec/nexuskvm/nexuskvm-runtime-apply.sh": "../scripts/nexuskvm-runtime-apply.sh"
+        },
+        "postInstallScript": "../scripts/deb-postinst.sh"
       }
     }
   }
