@@ -19,8 +19,7 @@ struct Args {
     config_path: PathBuf,
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
     let filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())
         .from_env_lossy();
@@ -45,6 +44,26 @@ async fn main() -> ExitCode {
         ),
     }
 
+    // Boost each tokio worker: the input writer tasks must not sit on
+    // SCHED_OTHER while the (mostly idle) main thread holds the RT priority.
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .on_thread_start(|| {
+            let _ = rkvm_input::priority::boost_thread();
+        })
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            tracing::error!("Error building async runtime: {}", err);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    runtime.block_on(run())
+}
+
+async fn run() -> ExitCode {
     let args = Args::parse();
     let config = match fs::read_to_string(&args.config_path).await {
         Ok(config) => config,
