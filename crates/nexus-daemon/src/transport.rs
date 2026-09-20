@@ -14,6 +14,9 @@ pub trait InputTransport: Send + Sync {
     async fn activate(&self, peer: &PeerId) -> Result<()>;
     async fn next(&self) -> Result<()>;
     async fn activate_local(&self) -> Result<()>;
+    /// Return request from the peer's edge portal (contained until the remote
+    /// pointer has left its entry edge).
+    async fn local_from_peer(&self) -> Result<()>;
     async fn release_all(&self, peer: Option<&PeerId>) -> Result<()>;
 }
 
@@ -99,6 +102,14 @@ impl InputTransport for RkvmAdapter {
     async fn activate_local(&self) -> Result<()> {
         self.handle
             .local()
+            .await
+            .map(|_| ())
+            .map_err(|e| anyhow!(e))
+    }
+
+    async fn local_from_peer(&self) -> Result<()> {
+        self.handle
+            .local_from_peer()
             .await
             .map(|_| ())
             .map_err(|e| anyhow!(e))
