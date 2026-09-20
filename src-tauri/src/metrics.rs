@@ -149,7 +149,9 @@ fn lifetime_cpu(total_ticks: u64, starttime: u64, clk: f64) -> f64 {
 /// between UI polls (~2 s apart). First poll reports the lifetime average.
 #[derive(Default)]
 pub struct MetricsTracker {
-    last: Option<(Instant, u64)>,
+    /// (pid, sampled_at, total_ticks) — pid is tracked so a service restart
+    /// cannot underflow the tick delta.
+    last: Option<(u32, Instant, u64)>,
 }
 
 impl MetricsTracker {
@@ -172,18 +174,18 @@ impl MetricsTracker {
         let total_ticks = stat.utime + stat.stime;
 
         out.cpu_percent = match self.last {
-            Some((t_prev, ticks_prev)) => {
+            Some((pid_prev, t_prev, ticks_prev)) if pid_prev == pid => {
                 let wall = t_prev.elapsed().as_secs_f64();
-                if wall < 0.2 {
+                if wall < 0.2 || total_ticks < ticks_prev {
                     lifetime_cpu(total_ticks, stat.starttime, clk) as f32
                 } else {
                     (((total_ticks - ticks_prev) as f64 / clk / wall * 100.0)
                         .clamp(0.0, 100.0 * cpu_cores())) as f32
                 }
             }
-            None => lifetime_cpu(total_ticks, stat.starttime, clk) as f32,
+            _ => lifetime_cpu(total_ticks, stat.starttime, clk) as f32,
         };
-        self.last = Some((Instant::now(), total_ticks));
+        self.last = Some((pid, Instant::now(), total_ticks));
 
         out.mem_mb = (stat.rss_pages as f64 * page_size_bytes() / (1024.0 * 1024.0)) as f32;
         out.uptime_secs = process_uptime_secs(stat.starttime, clk);
