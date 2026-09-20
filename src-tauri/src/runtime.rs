@@ -8,7 +8,7 @@ use std::{
     net::{IpAddr, UdpSocket},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 use tauri::{AppHandle, Manager};
 use tokio::time::{sleep, Duration};
@@ -283,7 +283,7 @@ fn issue_client_cert(dir: &Path) -> anyhow::Result<()> {
 
 fn write_daemon_toml(dir: &Path, password: &str, socket: &Path) -> anyhow::Result<()> {
     let body = format!(
-        "socket = \"{}\"\nlisten = \"{LISTEN}\"\nswitch-keys = [\"left-alt\", \"left-ctrl\"]\ncertificate = \"{}\"\nkey = \"{}\"\npassword = \"{}\"\n",
+        "socket = \"{}\"\nlisten = \"{LISTEN}\"\nswitch-keys = [\"left-alt\", \"left-ctrl\"]\npropagate-switch-keys = false\ncertificate = \"{}\"\nkey = \"{}\"\npassword = \"{}\"\n",
         socket.display(),
         cert_path(dir).display(),
         key_path(dir).display(),
@@ -430,13 +430,114 @@ fn logs_dir(dir: &Path) -> PathBuf {
     dir.join("logs")
 }
 
+/// Per-file cap. A rotated `.log.1` file is kept next to the live log.
+const LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// Total cap for the logs directory; older rotated files are pruned.
+const LOG_DIR_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+fn rotated_path(path: &Path) -> PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push(".1");
+    PathBuf::from(s)
+}
+
+fn rotate_if_needed(path: &Path) {
+    let Ok(meta) = fs::metadata(path) else {
+        return;
+    };
+    if meta.len() <= LOG_MAX_BYTES {
+        return;
+    }
+    let rotated = rotated_path(path);
+    let _ = fs::remove_file(&rotated);
+    let _ = fs::rename(path, &rotated);
+}
+
+fn prune_logs_dir(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut rotated: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+    let mut total = 0u64;
+    for e in entries.flatten() {
+        let Ok(meta) = e.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        total = total.saturating_add(meta.len());
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        if name.ends_with(".log.1") {
+            rotated.push((
+                meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+                meta.len(),
+                e.path(),
+            ));
+        }
+    }
+    if total <= LOG_DIR_MAX_BYTES {
+        return;
+    }
+    rotated.sort_by_key(|(t, _, _)| *t);
+    for (_, len, path) in rotated {
+        let _ = fs::remove_file(&path);
+        total = total.saturating_sub(len);
+        if total <= LOG_DIR_MAX_BYTES {
+            break;
+        }
+    }
+}
+
+fn open_log(path: &Path) -> Option<fs::File> {
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .ok()
+}
+
 pub(crate) fn ui_log(dir: &Path, msg: &str) {
     let path = logs_dir(dir).join("nexuskvm-ui.log");
-    let _ = fs::create_dir_all(logs_dir(dir));
+    rotate_if_needed(&path);
     use std::io::Write;
-    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Some(mut f) = open_log(&path) {
         let _ = writeln!(f, "{msg}");
     }
+}
+
+/// Pump a child pipe into a size-capped log file, rotating when full.
+fn spawn_log_pump(reader: impl std::io::Read + Send + 'static, path: PathBuf) {
+    std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader, Write};
+        let mut reader = BufReader::new(reader);
+        let mut file = open_log(&path);
+        let mut written = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let mut buf = Vec::new();
+        loop {
+            buf.clear();
+            match reader.read_until(b'\n', &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if written + buf.len() as u64 > LOG_MAX_BYTES {
+                        let rotated = rotated_path(&path);
+                        let _ = fs::remove_file(&rotated);
+                        let _ = fs::rename(&path, &rotated);
+                        file = open_log(&path);
+                        written = 0;
+                    }
+                    if let Some(f) = file.as_mut() {
+                        if f.write_all(&buf).is_ok() {
+                            written = written.saturating_add(buf.len() as u64);
+                        }
+                    }
+                }
+            }
+        }
+        prune_logs_dir(path.parent().unwrap_or(Path::new(".")));
+    });
 }
 
 fn strip_ansi(s: &str) -> String {
@@ -475,9 +576,18 @@ fn strip_ansi(s: &str) -> String {
 }
 
 fn read_log_tail(path: &Path, max_lines: usize) -> String {
-    let Ok(raw) = fs::read_to_string(path) else {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = fs::File::open(path) else {
         return String::new();
     };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let window = 256 * 1024u64;
+    let start = len.saturating_sub(window);
+    if f.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut raw = String::new();
+    let _ = f.take(window).read_to_string(&mut raw);
     let cleaned = strip_ansi(&raw);
     let lines: Vec<&str> = cleaned
         .lines()
@@ -556,7 +666,9 @@ fn spawn_logged(
 ) -> anyhow::Result<Child> {
     let log_root = logs_dir(dir);
     fs::create_dir_all(&log_root)?;
+    prune_logs_dir(&log_root);
     let log_path = log_root.join(format!("{service}.log"));
+    rotate_if_needed(&log_path);
     ui_log(
         dir,
         &format!(
@@ -565,24 +677,164 @@ fn spawn_logged(
             log_path.display()
         ),
     );
-    let log_file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)?;
-    let log_err = log_file.try_clone()?;
     let mut cmd = Command::new(bin);
     cmd.args(args)
         .env("RUST_LOG", rust_log)
         .env("NO_COLOR", "1")
         .env("RUST_LOG_STYLE", "never")
         .stdin(Stdio::null())
-        .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(log_err));
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     if let Some(pw) = secret_env {
         cmd.env("NEXUSKVM_PASSWORD", pw);
     }
-    cmd.spawn()
-        .map_err(|e| anyhow::anyhow!("failed to start {}: {e}", bin.display()))
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("failed to start {}: {e}", bin.display()))?;
+    if let Some(out) = child.stdout.take() {
+        spawn_log_pump(out, log_path.clone());
+    }
+    if let Some(err) = child.stderr.take() {
+        spawn_log_pump(err, log_path);
+    }
+    Ok(child)
+}
+
+/// Keeps the role processes alive and resyncs them when they die.
+///
+/// `rkvm-client` exits on any connection error and the daemon/agent can be
+/// killed by an upgrade or a crash. Without a supervisor the machine stays
+/// dead until the app is reopened by hand, and the host keeps routing input to
+/// a peer that no longer receives it.
+pub fn spawn_supervisor(app: AppHandle, rt: Arc<AppRuntime>) {
+    tauri::async_runtime::spawn(async move {
+        let mut fails: std::collections::HashMap<&'static str, u32> =
+            std::collections::HashMap::new();
+        let mut last: std::collections::HashMap<&'static str, std::time::Instant> =
+            std::collections::HashMap::new();
+        loop {
+            sleep(Duration::from_secs(2)).await;
+            let Ok(dir) = data_dir(&app) else { continue };
+            let Some(state) = load_state(&dir) else {
+                continue;
+            };
+            supervise_once(&app, &rt, &dir, &state, &mut fails, &mut last).await;
+        }
+    });
+}
+
+fn should_attempt(
+    key: &'static str,
+    fails: &mut std::collections::HashMap<&'static str, u32>,
+    last: &mut std::collections::HashMap<&'static str, std::time::Instant>,
+) -> bool {
+    let now = std::time::Instant::now();
+    let attempts = fails.get(key).copied().unwrap_or(0).min(5);
+    let backoff = Duration::from_secs(2u64.saturating_pow(attempts).min(30));
+    if let Some(t) = last.get(key) {
+        if now.duration_since(*t) < backoff {
+            return false;
+        }
+    }
+    last.insert(key, now);
+    *fails.entry(key).or_insert(0) += 1;
+    true
+}
+
+async fn supervise_once(
+    app: &AppHandle,
+    rt: &AppRuntime,
+    dir: &Path,
+    state: &SavedState,
+    fails: &mut std::collections::HashMap<&'static str, u32>,
+    last: &mut std::collections::HashMap<&'static str, std::time::Instant>,
+) {
+    let role = state.role;
+    let role_key: &'static str = match role {
+        Role::Host => "nexus-kvmd",
+        Role::Client => "rkvm-client",
+    };
+    if !crate::persist::boot_service_active(role) {
+        let alive = match rt.inner.lock() {
+            Ok(mut g) => match role {
+                Role::Host => child_running(&mut g.daemon),
+                Role::Client => child_running(&mut g.client),
+            },
+            Err(_) => true,
+        };
+        let reachable = if role == Role::Host {
+            alive || socket_alive().await
+        } else {
+            alive
+        };
+        if reachable {
+            fails.insert(role_key, 0);
+        } else if should_attempt(role_key, fails, last) {
+            let bin = match role {
+                Role::Host => find_bin(app, "nexus-kvmd"),
+                Role::Client => find_bin(app, "rkvm-client"),
+            };
+            let cfg = match role {
+                Role::Host => daemon_config_path(dir),
+                Role::Client => client_config_path(dir),
+            };
+            let Some(bin) = bin else {
+                ui_log(dir, &format!("supervisor: {role_key} binary not found"));
+                return;
+            };
+            if !cfg.is_file() {
+                ui_log(
+                    dir,
+                    &format!("supervisor: {role_key} config missing ({})", cfg.display()),
+                );
+                return;
+            }
+            let cfg_s = cfg.to_string_lossy().to_string();
+            let rust_log = match role {
+                Role::Host => "nexus=info,rkvm_server=info,rkvm_input=info",
+                Role::Client => "rkvm_client=info,rkvm_input=info",
+            };
+            match spawn_logged(dir, role_key, &bin, &[&cfg_s], rust_log, None) {
+                Ok(child) => {
+                    if let Ok(mut g) = rt.inner.lock() {
+                        match role {
+                            Role::Host => g.daemon = Some(child),
+                            Role::Client => g.client = Some(child),
+                        }
+                        g.last_error = None;
+                    }
+                    fails.insert(role_key, 0);
+                    ui_log(dir, &format!("supervisor: restarted {role_key}"));
+                }
+                Err(e) => {
+                    ui_log(dir, &format!("supervisor: {role_key} restart failed: {e}"));
+                }
+            }
+        }
+    }
+
+    // Session agent (clipboard + SwitchLocal listener) for both roles.
+    let agent_alive = match rt.inner.lock() {
+        Ok(mut g) => child_running(&mut g.agent),
+        Err(_) => true,
+    };
+    if agent_alive {
+        fails.insert("nexus-agent", 0);
+    } else if should_attempt("nexus-agent", fails, last) {
+        match spawn_agent(app, dir, role, state.server.as_deref()) {
+            Ok(child) => {
+                if let Ok(mut g) = rt.inner.lock() {
+                    kill(&mut g.agent);
+                    g.agent = Some(child);
+                }
+                fails.insert("nexus-agent", 0);
+                ui_log(dir, "supervisor: restarted nexus-agent");
+            }
+            Err(e) => {
+                ui_log(dir, &format!("supervisor: nexus-agent restart failed: {e}"));
+            }
+        }
+    }
 }
 
 fn child_failure(dir: &Path, service: &str) -> String {
@@ -1083,11 +1335,19 @@ pub fn control_client() -> DaemonClient {
 
 fn dirs_password() -> Option<String> {
     let home = std::env::var("HOME").ok()?;
-    let dir = PathBuf::from(home).join(".local/share/nexuskvm");
-    fs::read_to_string(dir.join("password"))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    let candidates = [
+        PathBuf::from(&home).join(".local/share/io.nexuskvm.app/password"),
+        PathBuf::from(&home).join(".local/share/nexuskvm/password"),
+    ];
+    for path in candidates {
+        if let Ok(s) = fs::read_to_string(&path) {
+            let t = s.trim().to_string();
+            if !t.is_empty() {
+                return Some(t);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1115,5 +1375,28 @@ mod tests {
         assert!(cleaned.contains("ERROR boom"));
         assert!(!cleaned.contains("31m"));
         assert!(!cleaned.contains("[34m"));
+    }
+
+    #[test]
+    fn supervisor_backoff_blocks_immediate_retry() {
+        let mut fails = std::collections::HashMap::new();
+        let mut last = std::collections::HashMap::new();
+        assert!(should_attempt("svc", &mut fails, &mut last));
+        assert!(!should_attempt("svc", &mut fails, &mut last));
+        fails.insert("svc", 0);
+        last.insert("svc", std::time::Instant::now() - Duration::from_secs(60));
+        assert!(should_attempt("svc", &mut fails, &mut last));
+    }
+
+    #[test]
+    fn log_rotation_keeps_rotated_copy() {
+        let dir = std::env::temp_dir().join(format!("nexus-logrot-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("x.log");
+        fs::write(&path, vec![b'a'; (LOG_MAX_BYTES + 1) as usize]).unwrap();
+        rotate_if_needed(&path);
+        assert!(rotated_path(&path).exists());
+        assert!(!path.exists());
+        let _ = fs::remove_dir_all(dir);
     }
 }

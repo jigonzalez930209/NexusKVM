@@ -257,12 +257,22 @@ fn get_peer_side(app: tauri::AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 async fn switch_edge(app: tauri::AppHandle, normalized_position: f32) -> Result<AppStatus, String> {
-    let layout = runtime::get_layout(&app).map_err(map_err)?;
+    let _ = normalized_position;
+    let dir = runtime::data_dir(&app).ok();
     let is_client = runtime::data_dir(&app)
         .ok()
         .and_then(|d| runtime::load_state(&d))
         .map(|s| s.role == Role::Client)
         .unwrap_or(false);
+    if let Some(d) = dir.as_deref() {
+        runtime::ui_log(
+            d,
+            &format!(
+                "switch_edge start role={} pos={normalized_position:.3}",
+                if is_client { "client" } else { "host" }
+            ),
+        );
+    }
 
     let status = if is_client {
         let server = runtime::data_dir(&app)
@@ -300,56 +310,34 @@ async fn switch_edge(app: tauri::AppHandle, normalized_position: f32) -> Result<
             _ => return Err("unexpected peer control reply".into()),
         }
     } else {
-        let remote_target =
-            if let Ok(st) = runtime::control_client().send(ControlCommand::Status).await {
-                if let Some(status) = st.status {
-                    if let Some(ref rp) = layout.remote_peer {
-                        if status
-                            .peers
-                            .get(rp)
-                            .map(|p| p.status == PeerStatus::Connected)
-                            .unwrap_or(false)
-                        {
-                            rp.clone()
-                        } else {
-                            status
-                                .peers
-                                .values()
-                                .find(|p| p.status == PeerStatus::Connected)
-                                .map(|p| p.id.clone())
-                                .or(layout.remote_peer.clone())
-                                .unwrap_or_else(|| "peer".into())
-                        }
-                    } else {
-                        status
-                            .peers
-                            .values()
-                            .find(|p| p.status == PeerStatus::Connected)
-                            .map(|p| p.id.clone())
-                            .unwrap_or_else(|| "peer".into())
-                    }
-                } else {
-                    layout.remote_peer.clone().unwrap_or_else(|| "peer".into())
+        // Same path as the physical Ctrl+Alt chord: cycle to the next
+        // connected target. No target guessing here, so a stale peer id can
+        // no longer make the edge switch fail.
+        let response = match runtime::control_client().send(ControlCommand::Next).await {
+            Ok(r) => r,
+            Err(e) => {
+                if let Some(d) = dir.as_deref() {
+                    runtime::ui_log(d, &format!("switch_edge daemon error: {e}"));
                 }
-            } else {
-                layout.remote_peer.clone().unwrap_or_else(|| "peer".into())
-            };
-
-        let entry = entry_for(
-            layout.peer_side.as_edge(),
-            normalized_position.clamp(0.0, 1.0),
-        );
-        status_from(
-            runtime::control_client()
-                .send(ControlCommand::Switch {
-                    target: remote_target,
-                    entry: Some(entry),
-                })
-                .await
-                .map_err(map_err)?,
-        )
-        .await?
+                return Err(map_err(e));
+            }
+        };
+        match status_from(response).await {
+            Ok(s) => s,
+            Err(e) => {
+                if let Some(d) = dir.as_deref() {
+                    runtime::ui_log(d, &format!("switch_edge rejected: {e}"));
+                }
+                return Err(e);
+            }
+        }
     };
+    if let Some(d) = dir.as_deref() {
+        runtime::ui_log(
+            d,
+            &format!("switch_edge done target={}", status.active_target),
+        );
+    }
     let _ = app.emit("nexus-target-changed", &status.active_target);
     let _ = app.emit("nexus-status-changed", &status);
     Ok(status)
@@ -361,21 +349,10 @@ fn position_edge_portal_cmd(app: tauri::AppHandle, side: Option<String>) {
 }
 
 fn maybe_show_edge_portal(app: &tauri::AppHandle) {
-    let portal_ok = runtime::data_dir(app)
-        .ok()
-        .and_then(|d| {
-            std::fs::read_to_string(nexus_agent::layout_store::agent_status_path(&d)).ok()
-        })
-        .and_then(|raw| {
-            serde_json::from_str::<nexus_agent::layout_store::AgentStatusFile>(&raw).ok()
-        })
-        .map(|s| s.portal_available)
-        .unwrap_or(false);
-    if portal_ok {
-        let _ = windows::hide_edge_portal(app);
-    } else {
-        let _ = windows::show_edge_portal(app);
-    }
+    // Always keep the X11 edge strip visible as a fallback/visual cue.
+    // GNOME InputCapture may report available while still failing to deliver
+    // activations (common on portal v1); the blue bar then remains the switch path.
+    let _ = windows::show_edge_portal(app);
 }
 
 #[tauri::command]
@@ -502,6 +479,7 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 if runtime::data_dir(&handle).ok().is_some() {
                     let _ = runtime::start(&handle, &rt).await;
+                    runtime::spawn_supervisor(handle.clone(), rt.clone());
                     tray::ensure_persistence(&handle);
                 }
             });

@@ -142,17 +142,17 @@ pub fn position_edge_portal(app: &AppHandle, side: Option<&str>) -> Result<(), S
         let size = monitor.size();
 
         let (target_x, target_y, target_w, target_h) = match side_str.as_str() {
-            "left" => (origin.x, origin.y, 2u32, size.height),
-            "top" => (origin.x, origin.y, size.width, 2u32),
+            "left" => (origin.x, origin.y, 1u32, size.height),
+            "top" => (origin.x, origin.y, size.width, 1u32),
             "bottom" => (
                 origin.x,
-                origin.y + (size.height as i32 - 2).max(0),
+                origin.y + (size.height as i32 - 1).max(0),
                 size.width,
-                2u32,
+                1u32,
             ),
             _ => {
-                let x = origin.x + (size.width as i32 - 2).max(0);
-                (x, origin.y, 2u32, size.height)
+                let x = origin.x + (size.width as i32 - 1).max(0);
+                (x, origin.y, 1u32, size.height)
             }
         };
 
