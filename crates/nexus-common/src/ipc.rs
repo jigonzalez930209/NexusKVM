@@ -1,4 +1,4 @@
-use crate::{AppStatus, EntryPoint, PeerId};
+use crate::{AppStatus, Edge, EntryPoint, PeerId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -10,6 +10,13 @@ pub enum ControlCommand {
     Switch {
         target: PeerId,
         entry: Option<EntryPoint>,
+    },
+    /// Pointer crossed this machine's layout edge. Unlike `Next` this never
+    /// cycles: it is a no-op while the machine is already remote or during the
+    /// containment window, so a duplicated edge event cannot bounce control.
+    SwitchEdge {
+        side: Edge,
+        position: f32,
     },
     /// Same as the Ctrl+Alt chord: cycle to the next connected target.
     Next,
