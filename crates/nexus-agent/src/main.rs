@@ -158,7 +158,9 @@ async fn run_host(
                 async move {
                     match msg {
                         PeerMessage::SwitchLocal => {
-                            let r = daemon.send(ControlCommand::Local).await;
+                            // Peer edge portal: contained by the daemon until
+                            // the remote pointer has left its entry edge.
+                            let r = daemon.send(ControlCommand::PeerLocal).await;
                             match r {
                                 Ok(resp) if resp.ok => Ok(resp
                                     .status
