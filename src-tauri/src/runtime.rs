@@ -78,6 +78,8 @@ struct Inner {
 pub struct AppRuntime {
     inner: Mutex<Inner>,
     metrics: Mutex<crate::metrics::MetricsTracker>,
+    /// False after an explicit user stop: the supervisor must not undo it.
+    desired_running: std::sync::atomic::AtomicBool,
 }
 
 impl AppRuntime {
@@ -85,10 +87,22 @@ impl AppRuntime {
         Self {
             inner: Mutex::new(Inner::default()),
             metrics: Mutex::new(crate::metrics::MetricsTracker::default()),
+            desired_running: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
+    pub fn set_desired_running(&self, running: bool) {
+        self.desired_running
+            .store(running, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn desired_running(&self) -> bool {
+        self.desired_running
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub fn shutdown(&self) {
+        self.set_desired_running(false);
         if let Ok(mut g) = self.inner.lock() {
             kill(&mut g.daemon);
             kill(&mut g.client);
@@ -334,6 +348,25 @@ fn push_named(candidates: &mut Vec<PathBuf>, dir: &Path, name: &str) {
 }
 
 pub(crate) fn find_bin(app: &AppHandle, name: &str) -> Option<PathBuf> {
+    // Probing runs `--help` on candidates and scans several directories: cache
+    // the result for the process lifetime (paths do not change at runtime).
+    static BIN_CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Option<PathBuf>>>,
+    > = std::sync::OnceLock::new();
+    let cache = BIN_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some(hit) = guard.get(name) {
+            return hit.clone();
+        }
+    }
+    let resolved = find_bin_uncached(app, name);
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(name.to_string(), resolved.clone());
+    }
+    resolved
+}
+
+fn find_bin_uncached(app: &AppHandle, name: &str) -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(dir) = app.path().resource_dir() {
         push_named(&mut candidates, &dir, name);
@@ -714,6 +747,10 @@ pub fn spawn_supervisor(app: AppHandle, rt: Arc<AppRuntime>) {
             std::collections::HashMap::new();
         loop {
             sleep(Duration::from_secs(2)).await;
+            // An explicit Stop must stick: never resurrect what the user stopped.
+            if !rt.desired_running() {
+                continue;
+            }
             let Ok(dir) = data_dir(&app) else { continue };
             let Some(state) = load_state(&dir) else {
                 continue;
@@ -794,7 +831,15 @@ async fn supervise_once(
                 Role::Host => "nexus=info,rkvm_server=info,rkvm_input=info",
                 Role::Client => "rkvm_client=info,rkvm_input=info",
             };
-            match spawn_logged(dir, role_key, &bin, &[&cfg_s], rust_log, None) {
+            // nexus-kvmd only accepts `--config <path>`; rkvm-client takes a
+            // positional config path. Passing the bare path to the daemon made
+            // every supervised restart die with "unexpected argument".
+            let args: Vec<String> = match role {
+                Role::Host => vec!["--config".into(), cfg_s.clone()],
+                Role::Client => vec![cfg_s.clone()],
+            };
+            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            match spawn_logged(dir, role_key, &bin, &arg_refs, rust_log, None) {
                 Ok(child) => {
                     if let Ok(mut g) = rt.inner.lock() {
                         match role {
@@ -803,7 +848,9 @@ async fn supervise_once(
                         }
                         g.last_error = None;
                     }
-                    fails.insert(role_key, 0);
+                    // Do NOT reset the backoff here: the child may die in the
+                    // next instant. It is reset once the process is observed
+                    // alive (see the `reachable` branch).
                     ui_log(dir, &format!("supervisor: restarted {role_key}"));
                 }
                 Err(e) => {
@@ -827,7 +874,7 @@ async fn supervise_once(
                     kill(&mut g.agent);
                     g.agent = Some(child);
                 }
-                fails.insert("nexus-agent", 0);
+                // Backoff resets only when the agent is observed alive.
                 ui_log(dir, "supervisor: restarted nexus-agent");
             }
             Err(e) => {
@@ -1083,10 +1130,21 @@ fn detach_if_boot_owned(rt: &AppRuntime, role: Role) {
     if !crate::persist::boot_service_active(role) {
         return;
     }
+    let mut reaped: Vec<std::process::Child> = Vec::new();
     if let Ok(mut g) = rt.inner.lock() {
         // systemd owns the role binary; drop child handles without killing.
-        let _ = g.daemon.take();
-        let _ = g.client.take();
+        if let Some(child) = g.daemon.take() {
+            reaped.push(child);
+        }
+        if let Some(child) = g.client.take() {
+            reaped.push(child);
+        }
+    }
+    // Reap asynchronously so a killed session copy cannot linger as a zombie.
+    for mut child in reaped {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
     }
 }
 
@@ -1116,6 +1174,7 @@ pub fn open_logs(app: &AppHandle) -> anyhow::Result<String> {
 
 pub async fn start(app: &AppHandle, rt: &AppRuntime) -> anyhow::Result<()> {
     let dir = data_dir(app)?;
+    rt.set_desired_running(true);
     ui_log(&dir, "start_runtime");
     let state =
         load_state(&dir).ok_or_else(|| anyhow::anyhow!("this machine is not configured yet"))?;
