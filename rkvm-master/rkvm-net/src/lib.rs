@@ -87,7 +87,10 @@ mod test {
         ClientEvent::Pong.encode(&mut pong).await.unwrap();
 
         let mut ready = Vec::new();
-        ClientEvent::Ready { epoch: 7 }.encode(&mut ready).await.unwrap();
+        ClientEvent::Ready { epoch: 7 }
+            .encode(&mut ready)
+            .await
+            .unwrap();
 
         assert!(!pong.is_empty());
         assert_ne!(pong, ready);

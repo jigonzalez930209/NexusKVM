@@ -572,11 +572,15 @@ async fn arm_ready(clients: &mut Slab<ClientSlot>, router: &TargetRouter) -> Opt
         return None;
     }
     let epoch = router.last_transition_seq();
-    let slot = clients.iter_mut().find(|(_, c)| c.id == target)?;
-    if slot.1.sender.try_send(Update::TakeControl { epoch }).is_err() {
-        if slot.1.sender.send(Update::TakeControl { epoch }).await.is_err() {
-            return None;
-        }
+    let (_, slot) = clients.iter_mut().find(|(_, c)| c.id == target)?;
+    if slot.sender.try_send(Update::TakeControl { epoch }).is_err()
+        && slot
+            .sender
+            .send(Update::TakeControl { epoch })
+            .await
+            .is_err()
+    {
+        return None;
     }
     Some((target, epoch))
 }
