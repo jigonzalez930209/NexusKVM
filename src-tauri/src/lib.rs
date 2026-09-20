@@ -463,8 +463,10 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let mut last_target: Option<String> = None;
                 let mut last_side: Option<String> = None;
+                let mut ticks: u32 = 0;
                 loop {
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    ticks = ticks.wrapping_add(1);
                     if let Ok(st) = runtime::control_client().send(ControlCommand::Status).await {
                         if let Some(status) = st.status {
                             if last_target.as_deref() != Some(&status.active_target) {
@@ -488,7 +490,12 @@ pub fn run() {
                             maybe_show_edge_portal(&watcher_handle);
                         }
                     }
-                    maybe_show_edge_portal(&watcher_handle);
+                    // Periodic safety re-assert (every ~5s) in case the WM hid
+                    // the strip. Window ops are marshaled to the main thread by
+                    // windows.rs; never call GTK from this tokio worker directly.
+                    if ticks.is_multiple_of(25) {
+                        maybe_show_edge_portal(&watcher_handle);
+                    }
                 }
             });
 
