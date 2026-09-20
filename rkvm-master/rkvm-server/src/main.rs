@@ -22,8 +22,7 @@ struct Args {
     shutdown_after: Option<u64>,
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
     let filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())
         .from_env_lossy();
@@ -48,6 +47,26 @@ async fn main() -> ExitCode {
         ),
     }
 
+    // `sched_setscheduler` is per-thread: boosting only main would leave the
+    // input tasks on SCHED_OTHER. Boost every worker as it starts.
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .on_thread_start(|| {
+            let _ = rkvm_input::priority::boost_thread();
+        })
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            tracing::error!("Error building async runtime: {}", err);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    runtime.block_on(run())
+}
+
+async fn run() -> ExitCode {
     let args = Args::parse();
     let config = match fs::read_to_string(&args.config_path).await {
         Ok(config) => config,

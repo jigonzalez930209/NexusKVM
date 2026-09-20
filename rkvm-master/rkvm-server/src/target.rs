@@ -240,6 +240,8 @@ impl TargetRouter {
             return Err(TargetError::TransitionInProgress);
         }
         if self.active == LOCAL_TARGET && !from_chord {
+            // Already local: drop any stale warp from an aborted transition.
+            self.pending_warp = None;
             return Ok(self.alloc_transition());
         }
         self.busy = true;
@@ -275,11 +277,15 @@ impl TargetRouter {
         self.chord_changed = false;
     }
 
-    pub fn note_key(&mut self, key: Key, down: bool) {
+    pub fn note_key(&mut self, key: Key, down: bool) -> Option<String> {
         if down {
             self.held_keys.insert(key, self.event_target().to_string());
+            None
         } else {
-            self.held_keys.remove(&key);
+            // Give the caller the destination the key was pressed to: after a
+            // switch chord the release must go to the previous machine, not to
+            // whatever is active now.
+            self.held_keys.remove(&key)
         }
     }
 
@@ -350,39 +356,64 @@ impl TargetControl {
 
 pub struct PendingCommand(Command);
 
+/// Result of applying one control command.
+pub struct Applied {
+    pub keys: Vec<(Key, String)>,
+    /// Target that must receive a pointer warp, with (edge, position). Only set
+    /// when the command actually moved ownership: a `Prepare` must not warp
+    /// anything yet.
+    pub warp: Option<(String, u8, f32)>,
+}
+
 impl PendingCommand {
-    pub fn apply(self, router: &mut TargetRouter) -> Vec<(Key, String)> {
+    pub fn apply(self, router: &mut TargetRouter) -> Applied {
         match self.0 {
             Command::Prepare { id, warp, reply } => {
                 let _ = reply.send(router.prepare(&id, warp));
-                Vec::new()
+                Applied {
+                    keys: Vec::new(),
+                    warp: None,
+                }
             }
             Command::Activate { id, reply } => {
                 let keys = router.drain_held();
-                let _ = reply.send(router.switch_to(&id));
-                keys
+                let result = router.switch_to(&id);
+                let warp = match result {
+                    Ok(_) => router
+                        .take_warp()
+                        .map(|(edge, pos)| (router.active_target().to_string(), edge, pos)),
+                    Err(_) => None,
+                };
+                let _ = reply.send(result);
+                Applied { keys, warp }
             }
             Command::Local { reply } => {
                 let keys = router.drain_held();
                 let _ = reply.send(router.switch_local());
-                keys
+                Applied { keys, warp: None }
             }
             Command::ReleaseAll { peer, reply } => {
                 let r = router.release_all(peer.as_deref());
                 let keys = r.as_ref().ok().cloned().unwrap_or_default();
                 let _ = reply.send(r);
-                keys
+                Applied { keys, warp: None }
             }
             Command::Next { reply } => {
                 let keys = router.drain_held();
                 let result = router.switch_next();
+                let warp = match &result {
+                    Ok(_) => router
+                        .take_warp()
+                        .map(|(edge, pos)| (router.active_target().to_string(), edge, pos)),
+                    Err(_) => None,
+                };
                 // Command-driven switch is not a held chord: target new events
                 // at the new machine immediately.
                 if result.is_ok() {
                     router.finish_chord();
                 }
                 let _ = reply.send(result);
-                keys
+                Applied { keys, warp }
             }
         }
     }
@@ -480,7 +511,7 @@ pub async fn drive(control: TargetControl) {
 pub async fn drive_with(mut control: TargetControl, mut router: TargetRouter) {
     control.publish(router.snapshot());
     while let Some(cmd) = control.recv().await {
-        cmd.apply(&mut router);
+        let _ = cmd.apply(&mut router);
         control.publish(router.snapshot());
     }
 }
@@ -542,7 +573,7 @@ mod tests {
         use rkvm_input::key::{Key, Keyboard};
         let mut c = fixture_with_peer("b", true);
         c.switch_to("b").unwrap();
-        c.note_key(Key::Key(Keyboard::A), true);
+        let _ = c.note_key(Key::Key(Keyboard::A), true);
         let released = c.remove_peer("b");
         assert_eq!(released, vec![(Key::Key(Keyboard::A), "b".to_string())]);
         assert_eq!(c.active_target(), LOCAL_TARGET);
@@ -553,7 +584,7 @@ mod tests {
     fn release_follows_press_destination() {
         use rkvm_input::key::{Key, Keyboard};
         let mut c = fixture_with_peer("b", true);
-        c.note_key(Key::Key(Keyboard::LeftShift), true);
+        let _ = c.note_key(Key::Key(Keyboard::LeftShift), true);
         c.switch_to("b").unwrap();
         let keys = c.release_all(Some("local")).unwrap();
         assert_eq!(
@@ -567,8 +598,8 @@ mod tests {
     fn chord_keeps_release_on_previous_until_finished() {
         use rkvm_input::key::{Key, Keyboard};
         let mut c = fixture_with_peer("b", true);
-        c.note_key(Key::Key(Keyboard::LeftAlt), true);
-        c.note_key(Key::Key(Keyboard::LeftCtrl), true);
+        let _ = c.note_key(Key::Key(Keyboard::LeftAlt), true);
+        let _ = c.note_key(Key::Key(Keyboard::LeftCtrl), true);
         assert_eq!(c.event_target(), LOCAL_TARGET);
         let held = c.drain_held();
         assert_eq!(held.len(), 2);
@@ -624,6 +655,35 @@ mod tests {
         let first = c.last_transition_seq();
         c.switch_local().unwrap();
         assert!(c.last_transition_seq() > first);
+    }
+
+    #[test]
+    fn prepare_keeps_warp_pending_until_activation() {
+        let mut c = fixture_with_peer("b", true);
+        c.prepare("b", Some((1, 0.25))).unwrap();
+        // Prepare alone must not hand the warp to the caller: the server only
+        // consumes it after a real transition.
+        assert!(c.pending_warp.is_some());
+        assert_eq!(c.active_target(), LOCAL_TARGET);
+        c.switch_to("b").unwrap();
+        assert_eq!(c.take_warp(), Some((1, 0.25)));
+        assert!(c.take_warp().is_none());
+    }
+
+    #[test]
+    fn key_up_routes_to_press_destination_after_switch() {
+        use rkvm_input::key::{Key, Keyboard};
+        let mut c = fixture_with_peer("b", true);
+        let _ = c.note_key(Key::Key(Keyboard::A), true);
+        c.switch_next().unwrap();
+        c.finish_chord();
+        assert_eq!(c.active_target(), "b");
+        // The release must go back to where the press went.
+        assert_eq!(
+            c.note_key(Key::Key(Keyboard::A), false),
+            Some(LOCAL_TARGET.to_string())
+        );
+        assert_eq!(c.note_key(Key::Key(Keyboard::A), false), None);
     }
 
     #[tokio::test]

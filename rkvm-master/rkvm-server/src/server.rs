@@ -53,6 +53,8 @@ struct ClientSlot {
     #[allow(dead_code)]
     addr: SocketAddr,
     id: String,
+    /// Events dropped because the peer channel was full/closed.
+    dropped: u64,
 }
 
 /// A handoff waiting for the peer's `Ready` confirmation.
@@ -97,11 +99,10 @@ pub async fn run(
 
         tokio::select! {
             Some(cmd) = control.recv() => {
-                let keys = cmd.apply(&mut router);
-                emit_releases(&mut devices, &mut clients, &mut router, keys).await?;
-                if let Some((edge, pos)) = router.take_warp() {
-                    let active = router.active_target().to_string();
-                    emit_warp(&mut devices, &mut clients, &mut router, active, edge, pos).await?;
+                let applied = cmd.apply(&mut router);
+                emit_releases(&mut devices, &mut clients, &mut router, applied.keys).await?;
+                if let Some((target, edge, pos)) = applied.warp {
+                    emit_warp(&mut devices, &mut clients, &mut router, target, edge, pos).await?;
                 }
                 if router.active_target() == LOCAL_TARGET {
                     // A confirmed return: push the local cursor away from the
@@ -173,6 +174,7 @@ pub async fn run(
                     sender,
                     addr,
                     id: id.clone(),
+                    dropped: 0,
                 });
                 for (dev_id, device) in devices.iter() {
                     let _ = notify
@@ -314,9 +316,12 @@ pub async fn run(
             (id, result) = event => match result {
                 Ok(event) => {
                     let mut press = false;
+                    // Key-up must go to the machine the key was pressed on,
+                    // even if a switch chord changed the active target since.
+                    let mut held_dest: Option<String> = None;
 
                     if let Event::Key(KeyEvent { key, down }) = event {
-                        router.note_key(key, down);
+                        held_dest = router.note_key(key, down);
                         if switch_keys.contains(&key) {
                             press = true;
 
@@ -339,6 +344,10 @@ pub async fn run(
                         match router.switch_next() {
                             Ok(_) => {
                                 tracing::info!(target = %router.active_target(), "Switched target");
+                                // Require a full release before the chord can
+                                // fire again: holding one switch key must not
+                                // re-switch on every tap of the other.
+                                pressed_keys.clear();
                                 emit_releases(
                                     &mut devices,
                                     &mut clients,
@@ -395,7 +404,7 @@ pub async fn run(
                         .into_iter()
                         .chain(press.then_some(Event::Sync(SyncEvent::All)));
 
-                    let dest = router.event_target().to_string();
+                    let dest = held_dest.unwrap_or_else(|| router.event_target().to_string());
                     route_events(&mut devices, &mut clients, &mut router, id, dest, events).await?;
                     if chord_complete {
                         router.finish_chord();
@@ -432,6 +441,13 @@ fn prune_clients(
     let mut dead = Vec::new();
     clients.retain(|_, client| {
         if client.sender.is_closed() {
+            if client.dropped > 0 {
+                tracing::warn!(
+                    peer = %client.id,
+                    dropped = client.dropped,
+                    "peer disconnected after dropping events"
+                );
+            }
             dead.push(client.id.clone());
             false
         } else {
@@ -495,19 +511,42 @@ async fn route_events(
     };
 
     for event in events {
-        if clients[key]
-            .sender
-            .send(Update::Event {
-                id: device_id,
-                event,
-            })
-            .await
-            .is_err()
-        {
-            let id = clients[key].id.clone();
-            clients.remove(key);
-            router.remove_peer(&id);
-            break;
+        let update = Update::Event {
+            id: device_id,
+            event,
+        };
+        match clients[key].sender.try_send(update) {
+            Ok(()) => {}
+            Err(TrySendError::Full(update)) => {
+                // A stalled peer must never freeze local input. Key events get
+                // a short bounded retry (dropping a key-up leaves it stuck);
+                // motion is dropped immediately under pressure.
+                let is_key = matches!(
+                    &update,
+                    Update::Event {
+                        event: Event::Key(_),
+                        ..
+                    }
+                );
+                if is_key
+                    && tokio::time::timeout(
+                        Duration::from_millis(20),
+                        clients[key].sender.send(update),
+                    )
+                    .await
+                    .is_ok()
+                {
+                    continue;
+                }
+                clients[key].dropped += 1;
+                tracing::debug!(peer = %dest, "peer queue full; dropped event");
+            }
+            Err(TrySendError::Closed(_)) => {
+                let id = clients[key].id.clone();
+                clients.remove(key);
+                router.remove_peer(&id);
+                break;
+            }
         }
     }
     Ok(())
@@ -528,8 +567,21 @@ async fn emit_releases(
                 ] {
                     match device.sender.try_send(event) {
                         Ok(()) | Err(TrySendError::Closed(_)) => {}
-                        Err(TrySendError::Full(_)) => {
-                            tracing::warn!(key = ?key, "Local release queue full; dropping release");
+                        Err(TrySendError::Full(event)) => {
+                            // Releases must not be lost silently: bounded retry,
+                            // then warn (a dropped key-up leaves it stuck).
+                            if tokio::time::timeout(
+                                Duration::from_millis(20),
+                                device.sender.send(event),
+                            )
+                            .await
+                            .is_err()
+                            {
+                                tracing::warn!(
+                                    key = ?key,
+                                    "Local release queue full; dropped release"
+                                );
+                            }
                         }
                     }
                 }
@@ -573,14 +625,17 @@ async fn arm_ready(clients: &mut Slab<ClientSlot>, router: &TargetRouter) -> Opt
     }
     let epoch = router.last_transition_seq();
     let (_, slot) = clients.iter_mut().find(|(_, c)| c.id == target)?;
-    if slot.sender.try_send(Update::TakeControl { epoch }).is_err()
-        && slot
-            .sender
-            .send(Update::TakeControl { epoch })
-            .await
-            .is_err()
-    {
-        return None;
+    match slot.sender.try_send(Update::TakeControl { epoch }) {
+        Ok(()) => {}
+        Err(TrySendError::Full(update)) => {
+            if tokio::time::timeout(Duration::from_millis(20), slot.sender.send(update))
+                .await
+                .is_err()
+            {
+                return None;
+            }
+        }
+        Err(TrySendError::Closed(_)) => return None,
     }
     Some((target, epoch))
 }
