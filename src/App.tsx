@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, inTauri } from './api';
 import { DashboardView } from './components/DashboardView';
 import { LogsView } from './components/LogsView';
@@ -45,6 +45,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [busy, setBusy] = useState(false);
   const [copiedInvite, setCopiedInvite] = useState(false);
+  const inFlightRef = useRef(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const status: Status | null = rt.daemon;
   const peers = useMemo(
@@ -54,10 +56,15 @@ export default function App() {
 
   async function refresh() {
     if (!inTauri()) return;
+    // Drop overlapping polls: an older snapshot must never overwrite a newer one.
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     try {
       setRt(await api.runtime());
     } catch (e) {
       toast.error('Connection error', String(e));
+    } finally {
+      inFlightRef.current = false;
     }
   }
 
@@ -65,40 +72,51 @@ export default function App() {
     refresh();
     const interval = setInterval(refresh, 2000);
 
+    // Listeners resolve asynchronously; if the effect is torn down before the
+    // promise resolves, unlisten immediately instead of leaking the listener.
+    let cancelled = false;
     let unlistenTarget: (() => void) | undefined;
     let unlistenSide: (() => void) | undefined;
     let unlistenStatus: (() => void) | undefined;
 
+    const track = (p: Promise<() => void>, assign: (u: () => void) => void) => {
+      p.then((u) => {
+        if (cancelled) u();
+        else assign(u);
+      }).catch(() => {});
+    };
+
     if (inTauri()) {
-      api
-        .onTargetChanged(() => {
+      track(
+        api.onTargetChanged(() => {
           refresh();
-        })
-        .then((u) => {
+        }),
+        (u) => {
           unlistenTarget = u;
-        })
-        .catch(() => {});
+        },
+      );
 
-      api
-        .onPeerSideChanged(() => {
+      track(
+        api.onPeerSideChanged(() => {
           refresh();
-        })
-        .then((u) => {
+        }),
+        (u) => {
           unlistenSide = u;
-        })
-        .catch(() => {});
+        },
+      );
 
-      api
-        .onStatusChanged(() => {
+      track(
+        api.onStatusChanged(() => {
           refresh();
-        })
-        .then((u) => {
+        }),
+        (u) => {
           unlistenStatus = u;
-        })
-        .catch(() => {});
+        },
+      );
     }
 
     return () => {
+      cancelled = true;
       clearInterval(interval);
       if (unlistenTarget) unlistenTarget();
       if (unlistenSide) unlistenSide();
@@ -110,6 +128,12 @@ export default function App() {
     if (!inTauri()) return;
     api.showEdgePortal().catch(() => {});
   }, [rt.peer_side]);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    };
+  }, []);
 
   async function runAction(fn: () => Promise<RuntimeSnapshot | Status | void>) {
     setBusy(true);
@@ -137,7 +161,11 @@ export default function App() {
         'Pairing code copied to clipboard',
         'Share it with your client PC',
       );
-      setTimeout(() => setCopiedInvite(false), 3000);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => {
+        setCopiedInvite(false);
+        copyTimerRef.current = null;
+      }, 3000);
     } catch (e) {
       toast.error('Failed to copy invite', String(e));
     }
