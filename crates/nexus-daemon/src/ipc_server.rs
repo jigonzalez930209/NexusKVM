@@ -117,6 +117,14 @@ async fn handle<T: InputTransport>(
                 }
                 Err(e) => ControlResponse::error(id, e.to_string()),
             },
+            ControlCommand::SwitchEdge { side, position } => match c.switch_edge(side, position).await {
+                Ok(t) => {
+                    let mut r = ControlResponse::ok(id, Some(c.status()));
+                    r.transition_id = Some(t);
+                    r
+                }
+                Err(e) => ControlResponse::error(id, e.to_string()),
+            },
             ControlCommand::Next => match c.next().await {
                 Ok(t) => {
                     let mut r = ControlResponse::ok(id, Some(c.status()));

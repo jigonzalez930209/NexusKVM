@@ -12,6 +12,10 @@ use uuid::Uuid;
 
 const AGENT_TTL: Duration = Duration::from_secs(5);
 
+/// A duplicated edge event (portal bounce, slow UI, retried IPC) must never
+/// flip control a second time. Transitions within this window are dropped.
+const EDGE_CONTAINMENT: Duration = Duration::from_millis(750);
+
 pub struct Controller<T: InputTransport> {
     transport: Arc<T>,
     state: RwLock<RuntimeState>,
@@ -19,6 +23,7 @@ pub struct Controller<T: InputTransport> {
     peers: RwLock<BTreeMap<PeerId, Peer>>,
     last_heartbeat: RwLock<Option<Instant>>,
     portal_available: RwLock<bool>,
+    last_transition_at: RwLock<Option<Instant>>,
     transition: Mutex<()>,
 }
 impl<T: InputTransport> Controller<T> {
@@ -30,6 +35,7 @@ impl<T: InputTransport> Controller<T> {
             peers: RwLock::new(BTreeMap::new()),
             last_heartbeat: RwLock::new(None),
             portal_available: RwLock::new(false),
+            last_transition_at: RwLock::new(None),
             transition: Mutex::new(()),
         }
     }
@@ -152,6 +158,71 @@ impl<T: InputTransport> Controller<T> {
         *self.last_heartbeat.write() = Some(Instant::now());
         *self.portal_available.write() = portal;
     }
+
+    fn mark_transition(&self) {
+        *self.last_transition_at.write() = Some(Instant::now());
+    }
+
+    async fn switch_locked(&self, peer: PeerId, entry: EntryPoint) -> Result<Uuid> {
+        let id = Uuid::new_v4();
+        *self.state.write() = RuntimeState::PreparingRemote {
+            peer: peer.clone(),
+            transition_id: id,
+        };
+        if let Err(e) = self.transport.prepare(&peer, &entry).await {
+            *self.state.write() = Self::state_for_active(&self.transport.active_target());
+            return Err(e);
+        }
+        if let Err(e) = self.transport.activate(&peer).await {
+            let _ = self.transport.activate_local().await;
+            *self.state.write() = RuntimeState::Local;
+            return Err(e);
+        }
+        self.mark_transition();
+        *self.active_target.write() = peer.clone();
+        *self.state.write() = RuntimeState::Remote {
+            peer,
+            transition_id: id,
+        };
+        Ok(id)
+    }
+
+    /// Edge crossing from this machine's portal.
+    ///
+    /// Containment rules, in order: while already remote the crossing is
+    /// ignored (return must be deliberate: chord, remote request or UI), and
+    /// while inside the containment window any duplicate is ignored. The
+    /// target is the connected peer, never a cycle.
+    pub async fn switch_edge(&self, side: Edge, position: f32) -> Result<Uuid> {
+        let _guard = self.transition.lock().await;
+        self.sync_target().await?;
+        let active = self.transport.active_target();
+        if active != LOCAL_TARGET {
+            tracing::info!(active = %active, side = ?side, "edge crossing contained: already remote");
+            return Ok(Uuid::nil());
+        }
+        if let Some(at) = *self.last_transition_at.read() {
+            if at.elapsed() < EDGE_CONTAINMENT {
+                tracing::info!(
+                    elapsed_ms = at.elapsed().as_millis(),
+                    side = ?side,
+                    "edge crossing contained: within debounce window"
+                );
+                return Ok(Uuid::nil());
+            }
+        }
+        let peer = self
+            .peers
+            .read()
+            .values()
+            .find(|p| p.status == PeerStatus::Connected)
+            .map(|p| p.id.clone());
+        let Some(peer) = peer else {
+            bail!("no connected peer for edge switch");
+        };
+        self.switch_locked(peer, entry_for(side, position)).await
+    }
+
     pub async fn switch_to(&self, peer: PeerId, entry: EntryPoint) -> Result<Uuid> {
         let _guard = self.transition.lock().await;
         let _ = self.refresh_peers().await;
@@ -189,26 +260,7 @@ impl<T: InputTransport> Controller<T> {
         if Self::in_transition(&self.state.read()) {
             bail!("transition in progress");
         }
-        let id = Uuid::new_v4();
-        *self.state.write() = RuntimeState::PreparingRemote {
-            peer: peer.clone(),
-            transition_id: id,
-        };
-        if let Err(e) = self.transport.prepare(&peer, &entry).await {
-            *self.state.write() = Self::state_for_active(&self.transport.active_target());
-            return Err(e);
-        }
-        if let Err(e) = self.transport.activate(&peer).await {
-            let _ = self.transport.activate_local().await;
-            *self.state.write() = RuntimeState::Local;
-            return Err(e);
-        }
-        *self.active_target.write() = peer.clone();
-        *self.state.write() = RuntimeState::Remote {
-            peer,
-            transition_id: id,
-        };
-        Ok(id)
+        self.switch_locked(peer, entry).await
     }
     /// Cycle to the next connected target, exactly like the Ctrl+Alt chord.
     pub async fn next(&self) -> Result<Uuid> {
@@ -223,6 +275,7 @@ impl<T: InputTransport> Controller<T> {
             .count();
         self.transport.next().await?;
         let active = self.transport.active_target();
+        self.mark_transition();
         *self.active_target.write() = active.clone();
         *self.state.write() = Self::state_for_active(&active);
         if active == before && active == LOCAL_TARGET {
@@ -245,6 +298,7 @@ impl<T: InputTransport> Controller<T> {
         }
         match self.transport.activate_local().await {
             Ok(()) => {
+                self.mark_transition();
                 *self.active_target.write() = LOCAL_TARGET.into();
                 *self.state.write() = RuntimeState::Local;
                 let _ = self.refresh_peers().await;
@@ -267,6 +321,7 @@ impl<T: InputTransport> Controller<T> {
         let _ = self.transport.release_all(None).await;
         match self.transport.activate_local().await {
             Ok(()) => {
+                self.mark_transition();
                 *self.active_target.write() = LOCAL_TARGET.into();
                 *self.state.write() = RuntimeState::Local;
                 Ok(())
@@ -394,6 +449,37 @@ mod tests {
         c.local().await.unwrap();
         assert_eq!(c.status().active_target, LOCAL_TARGET);
         c.next().await.unwrap();
+        assert_eq!(c.status().active_target, "b");
+    }
+
+    #[tokio::test]
+    async fn edge_switch_contains_duplicates_while_remote() {
+        let c = Controller::new(handle_with_peer("b", true));
+        c.refresh_peers().await.unwrap();
+        let first = c.switch_edge(Edge::Right, 0.5).await.unwrap();
+        assert!(!first.is_nil());
+        assert_eq!(c.status().active_target, "b");
+        // A second crossing (portal bounce) must NOT cycle back to local.
+        let second = c.switch_edge(Edge::Right, 0.5).await.unwrap();
+        assert!(second.is_nil());
+        assert_eq!(c.status().active_target, "b");
+    }
+
+    #[tokio::test]
+    async fn edge_switch_contained_right_after_return() {
+        let c = Controller::new(handle_with_peer("b", true));
+        c.refresh_peers().await.unwrap();
+        c.switch_edge(Edge::Right, 0.5).await.unwrap();
+        c.local().await.unwrap();
+        assert_eq!(c.status().active_target, LOCAL_TARGET);
+        // Instant re-trigger (cursor parked on the portal pixel): contained.
+        let bounce = c.switch_edge(Edge::Right, 0.5).await.unwrap();
+        assert!(bounce.is_nil());
+        assert_eq!(c.status().active_target, LOCAL_TARGET);
+        // After the containment window a deliberate crossing works again.
+        tokio::time::sleep(EDGE_CONTAINMENT + Duration::from_millis(20)).await;
+        let later = c.switch_edge(Edge::Right, 0.5).await.unwrap();
+        assert!(!later.is_nil());
         assert_eq!(c.status().active_target, "b");
     }
 
