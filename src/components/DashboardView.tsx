@@ -26,7 +26,12 @@ export function DashboardView({
   refresh,
 }: DashboardViewProps) {
   const activeTarget = status?.active_target ?? 'local';
-  const remotePeer = peers[0];
+  // Prefer the peer that actually owns input; only fall back to the first
+  // connected one when nothing is active.
+  const remotePeer =
+    peers.find((p) => p.id === activeTarget) ??
+    peers.find((p) => p.status === 'Connected') ??
+    peers[0];
 
   return (
     <>

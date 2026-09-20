@@ -10,6 +10,8 @@ export function EdgePortal() {
   const activeTargetRef = useRef<string>('local');
   const lastTriggerRef = useRef<number>(0);
   const leaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** True while the pointer is physically over the edge strip. */
+  const pointerInsideRef = useRef<boolean>(false);
 
   useEffect(() => {
     document.documentElement.classList.add('edge-portal-root');
@@ -19,6 +21,14 @@ export function EdgePortal() {
 
     let unlistenSide: (() => void) | undefined;
     let unlistenTarget: (() => void) | undefined;
+    let cancelled = false;
+
+    const track = (p: Promise<() => void>, assign: (u: () => void) => void) => {
+      p.then((u) => {
+        if (cancelled) u();
+        else assign(u);
+      }).catch(() => {});
+    };
 
     if (inTauri()) {
       // Seed the authoritative ownership state before arming: if the app
@@ -48,22 +58,22 @@ export function EdgePortal() {
         })
         .catch(() => {});
 
-      api
-        .onPeerSideChanged((newSide) => {
+      track(
+        api.onPeerSideChanged((newSide) => {
           const valid: PeerSide[] = ['left', 'right', 'top', 'bottom'];
           const validSide: PeerSide = valid.includes(newSide as PeerSide)
             ? (newSide as PeerSide)
             : 'right';
           setSide(validSide);
           api.positionEdgePortal(validSide).catch(() => {});
-        })
-        .then((unlisten) => {
-          unlistenSide = unlisten;
-        })
-        .catch(() => {});
+        }),
+        (u) => {
+          unlistenSide = u;
+        },
+      );
 
-      api
-        .onTargetChanged((target) => {
+      track(
+        api.onTargetChanged((target) => {
           activeTargetRef.current = target;
           if (leaveTimerRef.current) {
             clearTimeout(leaveTimerRef.current);
@@ -73,21 +83,25 @@ export function EdgePortal() {
           isArmedRef.current = false;
           setCanSwitch(false);
           // Returning to local while the cursor is already off the strip: re-arm
-          // after hysteresis so the next edge approach works without a click dance.
-          if (target === 'local') {
+          // only if the pointer is not sitting on the edge, otherwise wait for
+          // mouseleave (the server pushes the local cursor inwards on return).
+          if (target === 'local' && !pointerInsideRef.current) {
             leaveTimerRef.current = setTimeout(() => {
-              if (activeTargetRef.current === 'local') {
+              if (
+                activeTargetRef.current === 'local' &&
+                !pointerInsideRef.current
+              ) {
                 isArmedRef.current = true;
                 setCanSwitch(true);
               }
               leaveTimerRef.current = null;
             }, 200);
           }
-        })
-        .then((unlisten) => {
-          unlistenTarget = unlisten;
-        })
-        .catch(() => {});
+        }),
+        (u) => {
+          unlistenTarget = u;
+        },
+      );
     }
 
     const onDocLeave = () => {
@@ -109,6 +123,7 @@ export function EdgePortal() {
     document.addEventListener('pointermove', onDocEnterOrMove);
 
     return () => {
+      cancelled = true;
       document.documentElement.classList.remove('edge-portal-root');
       document.body.classList.remove('edge-portal-root');
       document.removeEventListener('mouseleave', onDocLeave);
@@ -129,19 +144,25 @@ export function EdgePortal() {
   }, []);
 
   function scheduleRearm() {
+    pointerInsideRef.current = false;
     if (activeTargetRef.current !== 'local') return;
     if (leaveTimerRef.current) {
       clearTimeout(leaveTimerRef.current);
     }
     leaveTimerRef.current = setTimeout(() => {
-      isArmedRef.current = true;
-      setCanSwitch(true);
+      // A re-entry during the delay cancels the re-arm: the portal must never
+      // arm under a pointer that is already on the strip.
+      if (!pointerInsideRef.current) {
+        isArmedRef.current = true;
+        setCanSwitch(true);
+      }
       leaveTimerRef.current = null;
     }, 200);
   }
 
   async function handleTrigger(e: React.MouseEvent | React.PointerEvent) {
     const now = Date.now();
+    pointerInsideRef.current = true;
 
     // Hard ownership gate: while another machine owns control, an edge event
     // must never be forwarded. Covers missed `target-changed` events (stale
@@ -150,21 +171,15 @@ export function EdgePortal() {
       return;
     }
 
-    // If portal is disarmed (e.g. mouse just returned to local PC and is still over the portal),
-    // do NOT switch to remote! Instead, keep resetting the 200ms timer so it only re-arms
-    // 200ms after the mouse stops moving at the edge or leaves into the desktop.
+    // Disarmed (e.g. control just returned and the cursor is still parked on
+    // the strip): cancel any pending re-arm so it cannot fire under the
+    // pointer, and stay disarmed until the pointer leaves and comes back.
     if (!isArmedRef.current) {
-      // Safety re-arm: if we are back on local but the target event was missed
-      // or arrived out of order, never stay stuck disarmed forever.
-      if (
-        activeTargetRef.current === 'local' &&
-        now - lastTriggerRef.current > 1500
-      ) {
-        isArmedRef.current = true;
-        setCanSwitch(true);
-      } else {
-        return;
+      if (leaveTimerRef.current) {
+        clearTimeout(leaveTimerRef.current);
+        leaveTimerRef.current = null;
       }
+      return;
     }
 
     if (now - lastTriggerRef.current < 300) {

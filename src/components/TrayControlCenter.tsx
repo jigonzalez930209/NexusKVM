@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, inTauri } from '../api';
 import { formatLatency, formatUptime } from '../shared/format';
 import { toast } from '../shared/toast';
@@ -48,13 +48,19 @@ function MsIcon({
 export function TrayControlCenter() {
   const [rt, setRt] = useState<RuntimeSnapshot | null>(null);
   const [copied, setCopied] = useState(false);
+  const inFlightRef = useRef(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   async function refresh() {
     if (!inTauri()) return;
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     try {
       setRt(await api.runtime());
     } catch {
       /* ignore */
+    } finally {
+      inFlightRef.current = false;
     }
   }
 
@@ -63,35 +69,67 @@ export function TrayControlCenter() {
       api.positionTrayPanel().catch(() => {});
     }
     refresh();
-    const interval = setInterval(refresh, 1500);
 
+    // The panel webview lives for the whole app lifetime but is hidden most of
+    // the time: polling while hidden burns CPU and duplicates the main
+    // window's own poll. Pause until the window becomes visible again.
+    let interval: ReturnType<typeof setInterval> | null = null;
+    const startPolling = () => {
+      if (interval) return;
+      refresh();
+      interval = setInterval(refresh, 1500);
+    };
+    const stopPolling = () => {
+      if (!interval) return;
+      clearInterval(interval);
+      interval = null;
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') startPolling();
+      else stopPolling();
+    };
+    if (document.visibilityState === 'visible') startPolling();
+    document.addEventListener('visibilitychange', onVisibility);
+
+    // Listeners resolve asynchronously; unlisten on teardown if they arrive late.
+    let cancelled = false;
     let unlistenTarget: (() => void) | undefined;
     let unlistenStatus: (() => void) | undefined;
 
-    if (inTauri()) {
-      api
-        .onTargetChanged(() => {
-          refresh();
-        })
-        .then((u) => {
-          unlistenTarget = u;
-        })
-        .catch(() => {});
+    const track = (p: Promise<() => void>, assign: (u: () => void) => void) => {
+      p.then((u) => {
+        if (cancelled) u();
+        else assign(u);
+      }).catch(() => {});
+    };
 
-      api
-        .onStatusChanged(() => {
+    if (inTauri()) {
+      track(
+        api.onTargetChanged(() => {
           refresh();
-        })
-        .then((u) => {
+        }),
+        (u) => {
+          unlistenTarget = u;
+        },
+      );
+
+      track(
+        api.onStatusChanged(() => {
+          refresh();
+        }),
+        (u) => {
           unlistenStatus = u;
-        })
-        .catch(() => {});
+        },
+      );
     }
 
     return () => {
-      clearInterval(interval);
+      cancelled = true;
+      stopPolling();
+      document.removeEventListener('visibilitychange', onVisibility);
       if (unlistenTarget) unlistenTarget();
       if (unlistenStatus) unlistenStatus();
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
     };
   }, []);
 
@@ -107,7 +145,11 @@ export function TrayControlCenter() {
       await navigator.clipboard.writeText(JSON.stringify(inv));
       setCopied(true);
       toast.success('Pairing code copied to clipboard');
-      setTimeout(() => setCopied(false), 2500);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => {
+        setCopied(false);
+        copyTimerRef.current = null;
+      }, 2500);
     } catch (e) {
       toast.error('Failed to copy invite', String(e));
     }
