@@ -256,6 +256,10 @@ impl TargetRouter {
         self.held_keys.drain().collect()
     }
 
+    pub fn restore_held(&mut self, key: Key, dest: String) {
+        self.held_keys.insert(key, dest);
+    }
+
     pub fn release_all(&mut self, peer: Option<&str>) -> Result<Vec<(Key, String)>, TargetError> {
         if let Some(id) = peer {
             if id != LOCAL_TARGET && !self.peers.contains_key(id) {
@@ -339,8 +343,15 @@ impl PendingCommand {
                 keys
             }
             Command::Next { reply } => {
-                let _ = reply.send(router.switch_next());
-                Vec::new()
+                let keys = router.drain_held();
+                let result = router.switch_next();
+                // Command-driven switch is not a held chord: target new events
+                // at the new machine immediately.
+                if result.is_ok() {
+                    router.finish_chord();
+                }
+                let _ = reply.send(result);
+                keys
             }
         }
     }
@@ -519,6 +530,23 @@ mod tests {
             vec![(Key::Key(Keyboard::LeftShift), LOCAL_TARGET.to_string())]
         );
         assert!(c.drain_held().is_empty());
+    }
+
+    #[test]
+    fn chord_keeps_release_on_previous_until_finished() {
+        use rkvm_input::key::{Key, Keyboard};
+        let mut c = fixture_with_peer("b", true);
+        c.note_key(Key::Key(Keyboard::LeftAlt), true);
+        c.note_key(Key::Key(Keyboard::LeftCtrl), true);
+        assert_eq!(c.event_target(), LOCAL_TARGET);
+        let held = c.drain_held();
+        assert_eq!(held.len(), 2);
+        c.switch_next().unwrap();
+        assert_eq!(c.active_target(), "b");
+        // While chord_changed, ups must still target the previous machine.
+        assert_eq!(c.event_target(), LOCAL_TARGET);
+        c.finish_chord();
+        assert_eq!(c.event_target(), "b");
     }
 
     #[test]

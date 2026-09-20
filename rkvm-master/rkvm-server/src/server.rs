@@ -66,6 +66,7 @@ pub async fn run(
     let mut clients = Slab::<ClientSlot>::new();
     let mut router = TargetRouter::new();
     let mut pressed_keys = HashSet::new();
+    let mut chord_active = false;
 
     // High capacity: the mouse produces REL_X/REL_Y/SYN at a high rate; cap 1
     // blocked the interceptor until each TLS flush and caused SYN_DROPPED.
@@ -266,19 +267,48 @@ pub async fn run(
                         }
                     }
 
+                    // Finish the chord only AFTER routing this event so key-ups
+                    // still go to the pre-switch target (prevents sticky modifiers).
+                    let chord_complete = press && pressed_keys.is_empty();
+
                     if press && pressed_keys.len() == switch_keys.len() {
+                        chord_active = true;
+                        // Release everything the previous target still thinks is
+                        // held (including the switch chord) before flipping.
+                        let held = router.drain_held();
                         match router.switch_next() {
                             Ok(_) => {
                                 tracing::info!(target = %router.active_target(), "Switched target");
+                                emit_releases(
+                                    &mut devices,
+                                    &mut clients,
+                                    &mut router,
+                                    held,
+                                )
+                                .await?;
                                 control.publish(router.snapshot());
                             }
-                            Err(err) => tracing::warn!(%err, "Switch shortcut ignored"),
+                            Err(err) => {
+                                // Put held keys back so later ups still track.
+                                for (key, dest) in held {
+                                    router.restore_held(key, dest);
+                                }
+                                tracing::warn!(%err, "Switch shortcut ignored");
+                            }
                         }
-                    } else if press && pressed_keys.is_empty() {
-                        router.finish_chord();
                     }
 
-                    if press && !propagate_switch_keys {
+                    // Withhold only the engaged shortcut chord. Lone switch keys
+                    // (Ctrl/Alt) must still reach the target, otherwise Ctrl+C,
+                    // Alt+Tab, etc. arrive as the bare key on either machine.
+                    let suppress_chord = press && !propagate_switch_keys && chord_active;
+                    if chord_complete {
+                        chord_active = false;
+                    }
+                    if suppress_chord {
+                        if chord_complete {
+                            router.finish_chord();
+                        }
                         continue;
                     }
 
@@ -288,6 +318,9 @@ pub async fn run(
 
                     let dest = router.event_target().to_string();
                     route_events(&mut devices, &mut clients, &mut router, id, dest, events).await?;
+                    if chord_complete {
+                        router.finish_chord();
+                    }
                     control.publish(router.snapshot());
                 }
                 Err(err)

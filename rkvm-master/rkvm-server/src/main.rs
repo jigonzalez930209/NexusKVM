@@ -81,7 +81,7 @@ async fn main() -> ExitCode {
     };
 
     let switch_keys = config.switch_keys.into_iter().map(Into::into).collect();
-    let propagate_switch_keys = config.propagate_switch_keys.unwrap_or(true);
+    let propagate_switch_keys = config.propagate_switch_keys.unwrap_or(false);
     let (_handle, control) = target::control_pair();
     let latencies = server::new_peer_latencies();
 

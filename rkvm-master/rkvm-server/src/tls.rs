@@ -76,7 +76,9 @@ pub async fn configure(certificate: &Path, key: &Path) -> Result<TlsAcceptor, Er
     for cert in &certificates {
         let _ = roots.add(cert);
     }
-    let verifier = rustls::server::AllowAnyAuthenticatedClient::new(roots);
+    // Prefer client certs when presented, but still allow password-only peers
+    // (session-spawned clients and older boot units without client-certificate).
+    let verifier = rustls::server::AllowAnyAnonymousOrAuthenticatedClient::new(roots);
 
     ServerConfig::builder()
         .with_safe_defaults()
