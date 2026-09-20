@@ -12,6 +12,7 @@ pub trait InputTransport: Send + Sync {
     fn latencies(&self) -> HashMap<PeerId, u32>;
     async fn prepare(&self, peer: &PeerId, entry: &EntryPoint) -> Result<()>;
     async fn activate(&self, peer: &PeerId) -> Result<()>;
+    async fn next(&self) -> Result<()>;
     async fn activate_local(&self) -> Result<()>;
     async fn release_all(&self, peer: Option<&PeerId>) -> Result<()>;
 }
@@ -82,6 +83,14 @@ impl InputTransport for RkvmAdapter {
     async fn activate(&self, peer: &PeerId) -> Result<()> {
         self.handle
             .activate(peer)
+            .await
+            .map(|_| ())
+            .map_err(|e| anyhow!(e))
+    }
+
+    async fn next(&self) -> Result<()> {
+        self.handle
+            .switch_next()
             .await
             .map(|_| ())
             .map_err(|e| anyhow!(e))

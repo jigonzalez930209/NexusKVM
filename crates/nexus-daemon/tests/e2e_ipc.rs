@@ -108,6 +108,17 @@ async fn e2e_status_switch_local_release() {
 }
 
 #[tokio::test]
+async fn e2e_next_loops_local_peer_local_peer() {
+    let (sock, _) = spawn_ipc("next").await;
+    for expect in ["192.168.1.20", LOCAL_TARGET, "192.168.1.20"] {
+        let r = rpc(&sock, ControlCommand::Next).await;
+        assert!(r.ok, "{}", r.error.unwrap_or_default());
+        assert_eq!(r.status.expect("status").active_target, expect);
+    }
+    let _ = std::fs::remove_file(sock);
+}
+
+#[tokio::test]
 async fn e2e_switch_rejects_unknown_peer() {
     let (sock, _) = spawn_ipc("ghost").await;
     let sw = rpc(

@@ -72,17 +72,12 @@ impl PortalBackend {
         match InputCapture::new().await {
             Ok(ic) => {
                 let version = ic.version();
-                let available = version >= 2;
-                if !available {
-                    warn!("InputCapture version {version} < 2");
-                }
+                // GNOME 46–50 often advertise .version = 1 while still exposing
+                // CreateSession2. Probe the API instead of trusting the property alone.
+                info!("InputCapture portal version {version}");
                 Ok(Self {
-                    available,
-                    portal_error: if available {
-                        None
-                    } else {
-                        Some(format!("InputCapture v{version} (v2 required)"))
-                    },
+                    available: true,
+                    portal_error: None,
                     events: None,
                     cancel: None,
                     live: None,
@@ -137,7 +132,8 @@ impl PortalBackend {
                 let _ = start.response().context("Start response")?;
                 Ok(session)
             }
-            Err(ashpd::Error::RequiresVersion(_, _)) => {
+            Err(e) => {
+                warn!("CreateSession2 unavailable ({e}); falling back to CreateSession");
                 let (session, _) = ic
                     .create_session(
                         None,
@@ -147,7 +143,6 @@ impl PortalBackend {
                     .context("InputCapture.CreateSession")?;
                 Ok(session)
             }
-            Err(e) => Err(e.into()),
         }
     }
 }
@@ -276,14 +271,27 @@ impl EdgeCaptureBackend for PortalBackend {
     async fn register(&mut self, barriers: Vec<Barrier>) -> Result<()> {
         if !self.available {
             anyhow::bail!(
-                "InputCapture v2 unavailable: {}",
+                "InputCapture unavailable: {}",
                 self.portal_error.as_deref().unwrap_or("unknown")
             );
         }
         self.shutdown_session().await;
 
         let ic = InputCapture::new().await.context("InputCapture::new")?;
-        let session = Self::start_session(&ic).await?;
+        let session = match tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            Self::start_session(&ic),
+        )
+        .await
+        {
+            Ok(Ok(session)) => session,
+            Ok(Err(e)) => return Err(e),
+            Err(_) => {
+                anyhow::bail!(
+                    "InputCapture session timed out (portal prompt unanswered?); using X11 edge strip"
+                )
+            }
+        };
         let zones = ic
             .zones(&session, Default::default())
             .await

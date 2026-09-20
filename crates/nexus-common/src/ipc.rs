@@ -11,6 +11,8 @@ pub enum ControlCommand {
         target: PeerId,
         entry: Option<EntryPoint>,
     },
+    /// Same as the Ctrl+Alt chord: cycle to the next connected target.
+    Next,
     Local,
     ReleaseAll,
     AgentHeartbeat {

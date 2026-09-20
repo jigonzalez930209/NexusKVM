@@ -1,15 +1,13 @@
 use clap::{Parser, ValueEnum};
 use nexus_agent::{
-    backend::{EdgeCaptureBackend, PortalBackend},
     clipboard::{self, ClipboardBridge},
     daemon_client::DaemonClient,
-    engine::EdgeEngine,
     layout_store::{self, AgentStatusFile},
     peer_channel::{self, PeerMessage, CONTROL_PORT},
 };
 use nexus_common::{ControlCommand, LayoutFile, PeerSide, PeerStatus, LOCAL_TARGET};
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
-use tracing::{info, warn};
+use tracing::info;
 
 #[derive(Clone, Copy, ValueEnum)]
 enum Role {
@@ -73,19 +71,23 @@ async fn main() -> anyhow::Result<()> {
     clipboard.set_secret(password.clone());
     clipboard.spawn_watch();
 
-    let backend = PortalBackend::connect().await?;
-    let portal_probe = backend.available();
+    // The InputCapture portal is intentionally not used. On GNOME/Mutter it is
+    // part of the same "remote access" machinery as screen casting, so any
+    // active session makes GNOME show its screen-capture indicator. Both roles
+    // switch through the X11 edge strip in the UI instead.
     write_status(
         &args.data_dir,
-        portal_probe,
-        backend.portal_error(),
+        false,
+        None,
         &layout_file,
         clipboard::clipboard_ok(),
     );
 
+    info!("edge-strip mode: InputCapture portal disabled");
+
     match args.role {
-        Role::Host => run_host(args, layout_file, backend, clipboard, password).await,
-        Role::Client => run_client(args, layout_file, backend, clipboard, password).await,
+        Role::Host => run_host(args, layout_file, clipboard, password).await,
+        Role::Client => run_client(args, layout_file, clipboard, password).await,
     }
 }
 
@@ -116,7 +118,6 @@ fn write_status(
 async fn run_host(
     args: Args,
     mut layout_file: LayoutFile,
-    backend: PortalBackend,
     clipboard: Arc<ClipboardBridge>,
     password: String,
 ) -> anyhow::Result<()> {
@@ -132,35 +133,14 @@ async fn run_host(
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    let mut engine = EdgeEngine::new(backend, daemon.clone(), layout_file.layout.clone());
-    if let Err(e) = engine.configure().await {
-        warn!("portal register: {e}");
-        write_status(
-            &args.data_dir,
-            false,
-            Some(&e.to_string()),
-            &layout_file,
-            clipboard::clipboard_ok(),
-        );
-        let _ = daemon
-            .send(ControlCommand::AgentHeartbeat {
-                portal_available: false,
-            })
-            .await;
-    } else {
-        write_status(
-            &args.data_dir,
-            true,
-            None,
-            &layout_file,
-            clipboard::clipboard_ok(),
-        );
-        let _ = daemon
-            .send(ControlCommand::AgentHeartbeat {
-                portal_available: true,
-            })
-            .await;
-    }
+    // Host edge switching goes through the UI's X11 edge strip (switch_edge →
+    // daemon). No InputCapture portal session is registered: GNOME/Mutter ties
+    // it to the screen-capture remote-access indicator.
+    let _ = daemon
+        .send(ControlCommand::AgentHeartbeat {
+            portal_available: false,
+        })
+        .await;
 
     let bind: SocketAddr = format!("0.0.0.0:{CONTROL_PORT}").parse()?;
     let daemon_listen = daemon.clone();
@@ -202,7 +182,6 @@ async fn run_host(
     let mut layout_mtime = std::fs::metadata(layout_store::layout_path(&args.data_dir))
         .and_then(|m| m.modified())
         .ok();
-    let mut suspended = false;
 
     loop {
         // Layout UI reload
@@ -212,15 +191,10 @@ async fn run_host(
                     layout_mtime = Some(modified);
                     if let Ok(f) = layout_store::load_or_default(&args.data_dir) {
                         layout_file = f;
-                        engine.set_layout(layout_file.layout.clone());
-                        if let Err(e) = engine.configure().await {
-                            warn!("reload layout: {e}");
-                        } else {
-                            info!("layout reloaded ({:?})", layout_file.peer_side);
-                        }
+                        info!("layout reloaded ({:?})", layout_file.peer_side);
                         write_status(
                             &args.data_dir,
-                            engine.backend_mut().available(),
+                            false,
                             None,
                             &layout_file,
                             clipboard::clipboard_ok(),
@@ -243,41 +217,20 @@ async fn run_host(
                     if layout_file.remote_peer.as_deref() != Some(p.id.as_str()) {
                         layout_file = layout_file.with_remote(&p.id);
                         layout_store::save(&args.data_dir, &layout_file)?;
-                        engine.set_layout(layout_file.layout.clone());
-                        if let Err(e) = engine.configure().await {
-                            warn!("layout peer update: {e}");
-                        }
                     }
                 } else {
                     clipboard.set_peer(None);
                 }
 
-                let remote = status.active_target != LOCAL_TARGET;
-                if remote && !suspended {
-                    let _ = engine.backend_mut().suspend().await;
-                    suspended = true;
-                } else if !remote && suspended {
-                    let _ = engine.backend_mut().resume().await;
-                    suspended = false;
-                }
-
                 let _ = daemon
                     .send(ControlCommand::AgentHeartbeat {
-                        portal_available: engine.backend_mut().available(),
+                        portal_available: false,
                     })
                     .await;
             }
         }
 
-        // Edge step with timeout so we can poll status
-        let step = engine.step();
         tokio::select! {
-            r = step => {
-                if let Err(e) = r {
-                    warn!("edge step: {e}");
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                }
-            }
             _ = tokio::time::sleep(Duration::from_secs(2)) => {}
             _ = tokio::signal::ctrl_c() => {
                 info!("agent shutdown");
@@ -291,7 +244,6 @@ async fn run_host(
 async fn run_client(
     args: Args,
     mut layout_file: LayoutFile,
-    mut backend: PortalBackend,
     clipboard: Arc<ClipboardBridge>,
     password: String,
 ) -> anyhow::Result<()> {
@@ -301,26 +253,16 @@ async fn run_client(
         .and_then(peer_channel::control_addr_from_peer);
     clipboard.set_peer(host_control);
 
-    let barriers = client_barriers(&layout_file);
-
-    if let Err(e) = backend.register(barriers).await {
-        warn!("portal register (client): {e}");
-        write_status(
-            &args.data_dir,
-            false,
-            Some(&e.to_string()),
-            &layout_file,
-            clipboard::clipboard_ok(),
-        );
-    } else {
-        write_status(
-            &args.data_dir,
-            true,
-            None,
-            &layout_file,
-            clipboard::clipboard_ok(),
-        );
-    }
+    // Return-to-host switching goes through the UI's X11 edge strip
+    // (switch_edge → peer SwitchLocal). No InputCapture portal session is
+    // registered: GNOME/Mutter ties it to the screen-capture indicator.
+    write_status(
+        &args.data_dir,
+        false,
+        None,
+        &layout_file,
+        clipboard::clipboard_ok(),
+    );
 
     let bind: SocketAddr = format!("0.0.0.0:{CONTROL_PORT}").parse()?;
     let clip_listen = clipboard.clone();
@@ -348,13 +290,10 @@ async fn run_client(
                     layout_mtime = Some(modified);
                     if let Ok(f) = layout_store::load_or_default(&args.data_dir) {
                         layout_file = f;
-                        if let Err(e) = backend.register(client_barriers(&layout_file)).await {
-                            warn!("client reload layout: {e}");
-                        }
                         write_status(
                             &args.data_dir,
-                            backend.available(),
-                            backend.portal_error(),
+                            false,
+                            None,
                             &layout_file,
                             clipboard::clipboard_ok(),
                         );
@@ -363,68 +302,10 @@ async fn run_client(
             }
         }
 
-        let next = backend.next();
         tokio::select! {
-            r = next => {
-                match r {
-                    Ok(ev) => {
-                        info!("client edge {:?} → switch_local", ev.edge);
-                        if let Some(addr) = host_control {
-                            match peer_channel::send_to(addr, &PeerMessage::SwitchLocal, &password)
-                                .await
-                            {
-                                Ok(PeerMessage::Ack { ok: true, .. }) => {}
-                                Ok(PeerMessage::Ack {
-                                    ok: false, error, ..
-                                }) => {
-                                    warn!(
-                                        "switch_local rejected: {}",
-                                        error.unwrap_or_else(|| "unknown".into())
-                                    );
-                                    continue;
-                                }
-                                Ok(_) => {
-                                    warn!("switch_local: unexpected peer reply");
-                                    continue;
-                                }
-                                Err(e) => {
-                                    warn!("switch_local: {e}");
-                                    continue;
-                                }
-                            }
-                        }
-                        tokio::time::sleep(Duration::from_millis(350)).await;
-                    }
-                    Err(e) => {
-                        warn!("client edge: {e}");
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                    }
-                }
-            }
             _ = tokio::time::sleep(Duration::from_secs(2)) => {}
             _ = tokio::signal::ctrl_c() => break,
         }
     }
     Ok(())
-}
-
-fn client_barriers(layout_file: &LayoutFile) -> Vec<nexus_common::Barrier> {
-    let local_barriers: Vec<_> = layout_file
-        .layout
-        .barriers
-        .iter()
-        .filter(|b| b.from_peer == layout_file.layout.local_peer)
-        .cloned()
-        .collect();
-    if local_barriers.is_empty() {
-        layout_file
-            .layout
-            .barriers
-            .iter()
-            .filter(|b| b.edge == layout_file.peer_side.as_edge())
-            .cloned()
-            .collect()
-    } else {
-        local_barriers
-    }
 }

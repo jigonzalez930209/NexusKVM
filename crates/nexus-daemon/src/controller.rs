@@ -56,27 +56,80 @@ impl<T: InputTransport> Controller<T> {
             }
         }
     }
+
+    /// Drop stale Preparing/Returning/Recovering when the transport already settled.
+    fn heal_transition_locked(&self, active: &str) {
+        let current = self.state.read().clone();
+        let next = match &current {
+            RuntimeState::ReturningLocal { .. } | RuntimeState::Recovering { .. } => {
+                // Intent is always local; callers force the transport if needed.
+                Some(RuntimeState::Local)
+            }
+            RuntimeState::PreparingRemote {
+                peer,
+                transition_id,
+            } if active == peer.as_str() => Some(RuntimeState::Remote {
+                peer: peer.clone(),
+                transition_id: *transition_id,
+            }),
+            RuntimeState::PreparingRemote { .. } if active == LOCAL_TARGET => {
+                Some(RuntimeState::Local)
+            }
+            RuntimeState::Remote { peer, .. }
+                if active == LOCAL_TARGET || active != peer.as_str() =>
+            {
+                Some(Self::state_for_active(active))
+            }
+            _ if !Self::in_transition(&current) => Some(Self::state_for_active(active)),
+            _ => None,
+        };
+        if let Some(s) = next {
+            *self.state.write() = s;
+        }
+    }
+
+    async fn ensure_local_transport(&self) {
+        let active = self.transport.active_target();
+        if active != LOCAL_TARGET {
+            let _ = self.transport.release_all(None).await;
+            let _ = self.transport.activate_local().await;
+        }
+        *self.active_target.write() = LOCAL_TARGET.into();
+        *self.state.write() = RuntimeState::Local;
+    }
+
     pub async fn sync_target(&self) -> Result<()> {
         let active = self.transport.active_target();
         *self.active_target.write() = active.clone();
-        let current_state = self.state.read().clone();
-        if !Self::in_transition(&current_state) {
-            *self.state.write() = Self::state_for_active(&active);
-        }
+        let was_returning = matches!(
+            *self.state.read(),
+            RuntimeState::ReturningLocal { .. } | RuntimeState::Recovering { .. }
+        );
+        self.heal_transition_locked(&active);
         self.refresh_peers().await?;
+        if was_returning && active != LOCAL_TARGET {
+            self.ensure_local_transport().await;
+            return Ok(());
+        }
+        // Dead active peer (reconnect changed id): force local.
+        if active != LOCAL_TARGET {
+            let alive = self
+                .peers
+                .read()
+                .get(&active)
+                .map(|p| p.status == PeerStatus::Connected)
+                .unwrap_or(false);
+            if !alive {
+                self.ensure_local_transport().await;
+            }
+        }
         Ok(())
     }
     pub fn status(&self) -> AppStatus {
         let active = self.transport.active_target();
         *self.active_target.write() = active.clone();
-        let current = self.state.read().clone();
-        let state = if Self::in_transition(&current) {
-            current
-        } else {
-            let reconciled = Self::state_for_active(&active);
-            *self.state.write() = reconciled.clone();
-            reconciled
-        };
+        self.heal_transition_locked(&active);
+        let state = self.state.read().clone();
         let rtt = self.transport.latencies();
         let mut peers = self.peers.read().clone();
         for (id, peer) in peers.iter_mut() {
@@ -102,6 +155,28 @@ impl<T: InputTransport> Controller<T> {
     pub async fn switch_to(&self, peer: PeerId, entry: EntryPoint) -> Result<Uuid> {
         let _guard = self.transition.lock().await;
         let _ = self.refresh_peers().await;
+        let mut active = self.transport.active_target();
+        *self.active_target.write() = active.clone();
+        let was_returning = matches!(
+            *self.state.read(),
+            RuntimeState::ReturningLocal { .. } | RuntimeState::Recovering { .. }
+        );
+        self.heal_transition_locked(&active);
+        if was_returning {
+            self.ensure_local_transport().await;
+            active = LOCAL_TARGET.into();
+        } else if active != LOCAL_TARGET
+            && !self
+                .peers
+                .read()
+                .get(&active)
+                .map(|p| p.status == PeerStatus::Connected)
+                .unwrap_or(false)
+        {
+            self.ensure_local_transport().await;
+            active = LOCAL_TARGET.into();
+        }
+        let _ = active;
         let connected = self
             .peers
             .read()
@@ -135,19 +210,54 @@ impl<T: InputTransport> Controller<T> {
         };
         Ok(id)
     }
+    /// Cycle to the next connected target, exactly like the Ctrl+Alt chord.
+    pub async fn next(&self) -> Result<Uuid> {
+        let _guard = self.transition.lock().await;
+        self.sync_target().await?;
+        let before = self.transport.active_target();
+        let connected = self
+            .peers
+            .read()
+            .values()
+            .filter(|p| p.status == PeerStatus::Connected)
+            .count();
+        self.transport.next().await?;
+        let active = self.transport.active_target();
+        *self.active_target.write() = active.clone();
+        *self.state.write() = Self::state_for_active(&active);
+        if active == before && active == LOCAL_TARGET {
+            tracing::warn!(connected, "next: no connected peer to switch to");
+            bail!("no connected peer to switch to");
+        }
+        tracing::info!(from = %before, to = %active, connected, "next: target cycled");
+        Ok(Uuid::new_v4())
+    }
     pub async fn local(&self) -> Result<Uuid> {
         let _guard = self.transition.lock().await;
         let id = Uuid::new_v4();
         *self.state.write() = RuntimeState::ReturningLocal { transition_id: id };
-        let current = self.active_target.read().clone();
+        let current = self.transport.active_target();
         if current != LOCAL_TARGET {
-            let _ = self.transport.release_all(Some(&current)).await;
+            if let Err(e) = self.transport.release_all(Some(&current)).await {
+                tracing::warn!("release_all({current}): {e}; draining all");
+                let _ = self.transport.release_all(None).await;
+            }
         }
-        self.transport.activate_local().await?;
-        *self.active_target.write() = LOCAL_TARGET.into();
-        *self.state.write() = RuntimeState::Local;
-        let _ = self.refresh_peers().await;
-        Ok(id)
+        match self.transport.activate_local().await {
+            Ok(()) => {
+                *self.active_target.write() = LOCAL_TARGET.into();
+                *self.state.write() = RuntimeState::Local;
+                let _ = self.refresh_peers().await;
+                tracing::info!(from = %current, "local: control returned");
+                Ok(id)
+            }
+            Err(e) => {
+                let active = self.transport.active_target();
+                *self.active_target.write() = active.clone();
+                *self.state.write() = Self::state_for_active(&active);
+                Err(e)
+            }
+        }
     }
     pub async fn recover(&self, reason: impl Into<String>) -> Result<()> {
         let _guard = self.transition.lock().await;
@@ -155,10 +265,19 @@ impl<T: InputTransport> Controller<T> {
             reason: reason.into(),
         };
         let _ = self.transport.release_all(None).await;
-        self.transport.activate_local().await?;
-        *self.active_target.write() = LOCAL_TARGET.into();
-        *self.state.write() = RuntimeState::Local;
-        Ok(())
+        match self.transport.activate_local().await {
+            Ok(()) => {
+                *self.active_target.write() = LOCAL_TARGET.into();
+                *self.state.write() = RuntimeState::Local;
+                Ok(())
+            }
+            Err(e) => {
+                let active = self.transport.active_target();
+                *self.active_target.write() = active.clone();
+                *self.state.write() = Self::state_for_active(&active);
+                Err(e)
+            }
+        }
     }
     pub async fn release_all(&self) -> Result<()> {
         self.recover("release_all").await
@@ -256,15 +375,56 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sync_target_preserves_returning_local() {
+    async fn next_cycles_local_and_peer() {
+        let c = Controller::new(handle_with_peer("b", true));
+        c.refresh_peers().await.unwrap();
+        c.next().await.unwrap();
+        assert_eq!(c.status().active_target, "b");
+        c.next().await.unwrap();
+        assert_eq!(c.status().active_target, LOCAL_TARGET);
+    }
+
+    #[tokio::test]
+    async fn next_after_local_works_again() {
+        let c = Controller::new(handle_with_peer("b", true));
+        c.refresh_peers().await.unwrap();
+        // full edge loop: local -> peer -> local -> peer
+        c.next().await.unwrap();
+        assert_eq!(c.status().active_target, "b");
+        c.local().await.unwrap();
+        assert_eq!(c.status().active_target, LOCAL_TARGET);
+        c.next().await.unwrap();
+        assert_eq!(c.status().active_target, "b");
+    }
+
+    #[tokio::test]
+    async fn sync_target_heals_stuck_returning_local() {
         let c = Controller::new(handle_with_peer("b", true));
         *c.state.write() = RuntimeState::ReturningLocal {
             transition_id: Uuid::nil(),
         };
         c.sync_target().await.unwrap();
-        assert!(matches!(
-            *c.state.read(),
-            RuntimeState::ReturningLocal { .. }
-        ));
+        assert!(matches!(*c.state.read(), RuntimeState::Local));
+        assert_eq!(c.status().active_target, LOCAL_TARGET);
+    }
+
+    #[tokio::test]
+    async fn switch_heals_stuck_returning_local() {
+        let c = Controller::new(handle_with_peer("b", true));
+        c.refresh_peers().await.unwrap();
+        *c.state.write() = RuntimeState::ReturningLocal {
+            transition_id: Uuid::nil(),
+        };
+        c.switch_to(
+            "b".into(),
+            EntryPoint {
+                edge: Edge::Left,
+                normalized_position: 0.5,
+                inset_px: 6,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(c.status().active_target, "b");
     }
 }

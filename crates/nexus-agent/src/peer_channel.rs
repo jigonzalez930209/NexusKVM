@@ -162,14 +162,44 @@ pub struct ClipEntry {
 }
 
 /// Flatten copied files and folders. Skips symlinks. Empty dirs are kept.
+/// Root names are made unique so two files with the same basename copied from
+/// different folders never overwrite each other on the peer.
 pub fn flatten_clip_paths(items: &[(String, PathBuf)]) -> Result<Vec<ClipEntry>> {
     let mut out = Vec::new();
     let mut total = 0u64;
+    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (name, path) in items {
-        let root = safe_file_name(name).unwrap_or_else(|| "item".into());
+        let mut root = safe_file_name(name).unwrap_or_else(|| "item".into());
+        if used.contains(&root) {
+            let (base, ext) = split_ext(&root);
+            let mut n = 2u32;
+            loop {
+                let candidate = if ext.is_empty() {
+                    format!("{base}-{n}")
+                } else {
+                    format!("{base}-{n}.{ext}")
+                };
+                if !used.contains(&candidate) {
+                    root = candidate;
+                    break;
+                }
+                n += 1;
+            }
+            warn!(from = %name, to = %root, "duplicate clipboard root name renamed");
+        }
+        used.insert(root.clone());
         push_tree(&mut out, &mut total, path, &root, 0)?;
     }
     Ok(out)
+}
+
+fn split_ext(name: &str) -> (String, String) {
+    match name.rsplit_once('.') {
+        Some((base, ext)) if !base.is_empty() && !ext.is_empty() => {
+            (base.to_string(), ext.to_string())
+        }
+        _ => (name.to_string(), String::new()),
+    }
 }
 
 fn push_tree(
@@ -215,6 +245,10 @@ fn push_tree(
         return Ok(());
     }
     if !meta.is_file() {
+        return Ok(());
+    }
+    if let Err(e) = std::fs::File::open(path) {
+        warn!(path = %path.display(), error = %e, "skipping unreadable clipboard file");
         return Ok(());
     }
     *total = total.saturating_add(meta.len());
@@ -343,6 +377,19 @@ pub async fn send_to(addr: SocketAddr, msg: &PeerMessage, password: &str) -> Res
 
 pub async fn send_clip(addr: SocketAddr, password: &str, payload: &ClipOut) -> Result<PeerMessage> {
     let id = uuid::Uuid::new_v4().to_string();
+    // Flatten exactly once: offer metadata and the byte stream must describe
+    // the same file list, otherwise the receiver desyncs and the transfer
+    // hangs or fails its hash check.
+    let entries = match payload {
+        ClipOut::Files(files) => {
+            let entries = flatten_clip_paths(files)?;
+            if entries.is_empty() {
+                bail!("no clipboard files");
+            }
+            Some(entries)
+        }
+        _ => None,
+    };
     let (kind, files_meta, byte_len) = match payload {
         ClipOut::Text(t) => {
             let n = t.len() as u64;
@@ -358,14 +405,11 @@ pub async fn send_clip(addr: SocketAddr, password: &str, payload: &ClipOut) -> R
             }
             (ClipKind::Png, Vec::new(), n)
         }
-        ClipOut::Files(files) => {
-            let entries = flatten_clip_paths(files)?;
-            if entries.is_empty() {
-                bail!("no clipboard files");
-            }
+        ClipOut::Files(_) => {
+            let entries = entries.as_ref().expect("files entries");
             let mut meta = Vec::new();
             let mut total = 0u64;
-            for e in &entries {
+            for e in entries {
                 total = total.saturating_add(e.size);
                 meta.push(ClipFileMeta {
                     name: e.rel.clone(),
@@ -379,6 +423,13 @@ pub async fn send_clip(addr: SocketAddr, password: &str, payload: &ClipOut) -> R
             (ClipKind::Files, meta, total)
         }
     };
+    info!(
+        peer = %addr,
+        kind = ?kind,
+        bytes = byte_len,
+        files = files_meta.len(),
+        "clipboard send start"
+    );
 
     let mut stream = TcpStream::connect(addr).await?;
     write_signed(
@@ -403,22 +454,28 @@ pub async fn send_clip(addr: SocketAddr, password: &str, payload: &ClipOut) -> R
             hasher.update(p);
             write_aead_bytes(&mut stream, password, p).await?;
         }
-        ClipOut::Files(files) => {
-            let entries = flatten_clip_paths(files)?;
+        ClipOut::Files(_) => {
+            let entries = entries.as_ref().expect("files entries");
             for e in entries {
                 if e.dir {
                     continue;
                 }
-                let mut f = File::open(&e.path).await?;
+                let mut f = File::open(&e.path)
+                    .await
+                    .with_context(|| format!("open clip file {}", e.path.display()))?;
+                let mut remain = e.size;
                 let mut buf = vec![0u8; CHUNK];
-                loop {
-                    let n = f.read(&mut buf).await?;
+                while remain > 0 {
+                    let want = remain.min(CHUNK as u64) as usize;
+                    let n = f.read(&mut buf[..want]).await?;
                     if n == 0 {
-                        break;
+                        bail!("clip file shrank during transfer: {}", e.rel);
                     }
                     hasher.update(&buf[..n]);
                     write_aead_bytes(&mut stream, password, &buf[..n]).await?;
+                    remain -= n as u64;
                 }
+                debug!(file = %e.rel, size = e.size, "clip file sent");
             }
         }
     }
@@ -426,7 +483,9 @@ pub async fn send_clip(addr: SocketAddr, password: &str, payload: &ClipOut) -> R
     let sha256 = hex::encode(hasher.finalize());
     write_signed(&mut stream, password, &PeerMessage::ClipDone { id, sha256 }).await?;
     let mut lines = BufReader::new(stream);
-    read_signed_line(&mut lines, password).await
+    let reply = read_signed_line(&mut lines, password).await?;
+    info!(peer = %addr, kind = ?kind, bytes = byte_len, "clipboard send done");
+    Ok(reply)
 }
 
 async fn hash_copy<R: AsyncRead + Unpin>(
@@ -465,6 +524,13 @@ async fn recv_clip<R: AsyncRead + Unpin>(
     if files.len() > CLIP_MAX_ENTRIES {
         bail!("too many clipboard files");
     }
+    info!(
+        id = %id,
+        kind = ?kind,
+        bytes = byte_len,
+        entries = files.len(),
+        "clipboard recv start"
+    );
     prune_inbox(clip_dir);
     if dir_size(clip_dir) + byte_len > CLIP_INBOX_CAP {
         bail!("clipboard inbox full");
@@ -537,10 +603,17 @@ async fn recv_clip<R: AsyncRead + Unpin>(
                 }
                 out.write_all(&body).await?;
                 out.flush().await?;
+                debug!(file = %rel, size = meta.size, "clip file received");
             }
             incoming.files = roots;
             let digest: [u8; 32] = hasher.finalize().into();
             verify_done(reader, password, &id, &digest).await?;
+            info!(
+                id = %id,
+                roots = incoming.files.len(),
+                bytes = byte_len,
+                "clipboard recv done"
+            );
         }
     }
     Ok(incoming)
@@ -671,7 +744,10 @@ where
                         on_clip(clip);
                         Ok(None)
                     }
-                    Err(e) => Err(e.to_string()),
+                    Err(e) => {
+                        warn!(peer = %peer, error = %e, "clipboard receive failed");
+                        Err(e.to_string())
+                    }
                 },
                 None => Err("clipboard inbox unavailable".into()),
             };
@@ -783,6 +859,26 @@ mod tests {
         assert_eq!(safe_rel_path("/etc/passwd").unwrap(), "etc/passwd");
         assert!(safe_rel_path("/etc/passwd").is_some());
         assert_eq!(safe_rel_path("/etc/passwd").as_deref(), Some("etc/passwd"));
+    }
+
+    #[test]
+    fn flatten_renames_duplicate_roots() {
+        let root = std::env::temp_dir().join(format!("nexus-dup-{}", std::process::id()));
+        let a = root.join("a");
+        let b = root.join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("report.txt"), b"A").unwrap();
+        std::fs::write(b.join("report.txt"), b"B").unwrap();
+        let entries = flatten_clip_paths(&[
+            ("report.txt".into(), a.join("report.txt")),
+            ("report.txt".into(), b.join("report.txt")),
+        ])
+        .unwrap();
+        let names: Vec<_> = entries.iter().map(|e| e.rel.clone()).collect();
+        assert!(names.contains(&"report.txt".to_string()), "{names:?}");
+        assert!(names.contains(&"report-2.txt".to_string()), "{names:?}");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

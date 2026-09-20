@@ -11,7 +11,9 @@ use std::{
     thread,
     time::Duration,
 };
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
+
+const SEND_TIMEOUT: Duration = Duration::from_secs(600);
 
 enum LocalSnap {
     Empty,
@@ -22,6 +24,19 @@ enum LocalSnap {
         rgba: Vec<u8>,
     },
     Files(Vec<PathBuf>),
+}
+
+fn snap_desc(snap: &LocalSnap) -> String {
+    match snap {
+        LocalSnap::Empty => "empty".into(),
+        LocalSnap::Text(t) => format!("text {} bytes", t.len()),
+        LocalSnap::Image {
+            width,
+            height,
+            rgba,
+        } => format!("image {width}x{height} ({} bytes)", rgba.len()),
+        LocalSnap::Files(paths) => format!("files {} items", paths.len()),
+    }
 }
 
 enum Cmd {
@@ -61,7 +76,14 @@ impl ClipboardBridge {
     }
 
     pub fn set_peer(&self, addr: Option<std::net::SocketAddr>) {
-        *self.peer.lock().unwrap() = addr;
+        let mut cur = self.peer.lock().unwrap();
+        if *cur != addr {
+            match addr {
+                Some(a) => info!("clipboard peer → {a}"),
+                None => info!("clipboard peer → none"),
+            }
+            *cur = addr;
+        }
     }
 
     pub fn ingest(&self, clip: IncomingClip) {
@@ -91,11 +113,12 @@ impl ClipboardBridge {
                         return;
                     }
                 };
+                info!("clipboard watcher started (inbox {})", inbox.display());
                 loop {
                     match rx.recv_timeout(Duration::from_millis(350)) {
                         Ok(Cmd::Apply(incoming)) => {
-                            if apply_incoming(&mut clip, incoming, &last_fp).is_err() {
-                                debug!("clipboard apply failed");
+                            if let Err(e) = apply_incoming(&mut clip, incoming, &last_fp) {
+                                warn!("clipboard apply failed: {e}");
                             }
                         }
                         Err(RecvTimeoutError::Timeout) => {}
@@ -122,18 +145,31 @@ impl ClipboardBridge {
                         *last = fp.clone();
                         prev
                     };
+                    let desc = snap_desc(&snap);
                     let Some(out) = snap_to_out(snap) else {
                         continue;
                     };
+                    info!("clipboard → {addr}: {desc}");
                     sending.store(true, Ordering::SeqCst);
                     let sending2 = Arc::clone(&sending);
                     let last_fp2 = Arc::clone(&last_fp);
                     handle.spawn(async move {
-                        if let Err(e) = peer_channel::send_clip(addr, &pw, &out).await {
-                            debug!("clipboard send failed: {e}");
-                            let mut g = last_fp2.lock().unwrap();
-                            if *g == fp {
-                                *g = prev;
+                        let send = peer_channel::send_clip(addr, &pw, &out);
+                        match tokio::time::timeout(SEND_TIMEOUT, send).await {
+                            Ok(Ok(ack)) => info!("clipboard sent → {addr}: {desc} ({ack:?})"),
+                            Ok(Err(e)) => {
+                                warn!("clipboard send failed → {addr}: {e}");
+                                let mut g = last_fp2.lock().unwrap();
+                                if *g == fp {
+                                    *g = prev;
+                                }
+                            }
+                            Err(_) => {
+                                warn!("clipboard send timed out → {addr}");
+                                let mut g = last_fp2.lock().unwrap();
+                                if *g == fp {
+                                    *g = prev;
+                                }
                             }
                         }
                         sending2.store(false, Ordering::SeqCst);
@@ -145,11 +181,8 @@ impl ClipboardBridge {
 }
 
 fn read_snap(clip: &mut Clipboard) -> LocalSnap {
-    if let Ok(files) = clip.get().file_list() {
-        if !files.is_empty() {
-            return LocalSnap::Files(files);
-        }
-    }
+    // Prefer real image payloads over a single screenshot file path so paste
+    // lands as an image on the peer (Nautilus/GIMP/etc. expect image/png).
     if let Ok(img) = clip.get().image() {
         if img.width > 0 && img.height > 0 && !img.bytes.is_empty() {
             return LocalSnap::Image {
@@ -159,12 +192,137 @@ fn read_snap(clip: &mut Clipboard) -> LocalSnap {
             };
         }
     }
+    if let Ok(files) = clip.get().file_list() {
+        if !files.is_empty() {
+            if files.len() == 1 {
+                if let Some(img) = image_snap_from_path(&files[0]) {
+                    return img;
+                }
+            }
+            return LocalSnap::Files(files);
+        }
+    }
     if let Ok(text) = clip.get_text() {
+        if let Some(paths) = parse_uri_list(&text) {
+            if paths.len() == 1 {
+                if let Some(img) = image_snap_from_path(&paths[0]) {
+                    return img;
+                }
+            }
+            if !paths.is_empty() {
+                return LocalSnap::Files(paths);
+            }
+        }
         if !text.is_empty() {
             return LocalSnap::Text(text);
         }
     }
     LocalSnap::Empty
+}
+
+fn image_snap_from_path(path: &Path) -> Option<LocalSnap> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif"
+    ) {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.is_empty() || bytes.len() as u64 > peer_channel::CLIP_MAX_PNG {
+        return None;
+    }
+    let (w, h, rgba) = png_to_rgba(&bytes)
+        .or_else(|_| {
+            let img = image::load_from_memory(&bytes).map_err(|e| anyhow::anyhow!(e))?;
+            let rgba = img.to_rgba8();
+            Ok::<_, anyhow::Error>((
+                rgba.width() as usize,
+                rgba.height() as usize,
+                rgba.into_raw(),
+            ))
+        })
+        .ok()?;
+    if w == 0 || h == 0 {
+        return None;
+    }
+    Some(LocalSnap::Image {
+        width: w,
+        height: h,
+        rgba,
+    })
+}
+
+fn parse_uri_list(text: &str) -> Option<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let path = if let Some(rest) = line.strip_prefix("file://") {
+            let decoded = percent_decode(rest);
+            PathBuf::from(decoded)
+        } else if line.starts_with('/') {
+            PathBuf::from(line)
+        } else {
+            continue;
+        };
+        if path.exists() {
+            paths.push(path);
+        }
+    }
+    if paths.is_empty() {
+        None
+    } else {
+        Some(paths)
+    }
+}
+
+/// `file:///path/with spaces` → percent-encoded URI, as text/uri-list expects.
+fn path_to_uri(path: &Path) -> String {
+    let raw = path.to_string_lossy();
+    let mut out = String::from("file://");
+    for b in raw.bytes() {
+        let keep = b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.' | b'~');
+        if keep {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(a), Some(b)) = (hex_nibble(bytes[i + 1]), hex_nibble(bytes[i + 2])) {
+                out.push((a << 4) | b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn fingerprint(snap: &LocalSnap, inbox: &Path) -> String {
@@ -271,8 +429,10 @@ fn apply_incoming(
     match incoming.kind {
         ClipKind::Text => {
             if let Some(text) = incoming.text {
+                let len = text.len();
                 clip.set_text(&text)?;
                 *last_fp.lock().unwrap() = fingerprint(&LocalSnap::Text(text), Path::new(""));
+                info!("clipboard ← text applied ({len} bytes)");
             }
         }
         ClipKind::Png => {
@@ -292,14 +452,32 @@ fn apply_incoming(
                     },
                     Path::new(""),
                 );
+                info!("clipboard ← image applied ({w}x{h}, {} bytes)", png.len());
             }
         }
         ClipKind::Files => {
             if incoming.files.is_empty() {
                 return Ok(());
             }
-            clip.set().file_list(&incoming.files)?;
+            let roots: Vec<String> = incoming
+                .files
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect();
+            // Prefer file_list; if the compositor rejects it, fall back to a
+            // text/uri-list so Ctrl+V still has something usable.
+            if let Err(e) = clip.set().file_list(&incoming.files) {
+                warn!("clipboard file_list apply failed: {e}; falling back to uri-list");
+                let uri = incoming
+                    .files
+                    .iter()
+                    .map(|p| path_to_uri(p))
+                    .collect::<Vec<_>>()
+                    .join("\r\n");
+                clip.set_text(uri)?;
+            }
             *last_fp.lock().unwrap() = format!("inbox:{}", incoming.files.len());
+            info!("clipboard ← files applied: {}", roots.join(", "));
         }
     }
     Ok(())
@@ -348,5 +526,24 @@ mod tests {
         let inbox = PathBuf::from("/tmp/nexuskvm-clip-test");
         let snap = LocalSnap::Files(vec![inbox.join("a.txt")]);
         assert!(fingerprint(&snap, &inbox).starts_with("inbox:"));
+    }
+
+    #[test]
+    fn path_to_uri_encodes_spaces() {
+        assert_eq!(
+            path_to_uri(Path::new("/home/u/My Shot.png")),
+            "file:///home/u/My%20Shot.png"
+        );
+    }
+
+    #[test]
+    fn uri_list_parses_file_urls() {
+        let dir = std::env::temp_dir().join("nexus-uri-list-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let f = dir.join("shot.png");
+        std::fs::write(&f, b"x").unwrap();
+        let text = format!("file://{}\n#comment\n", f.display());
+        let paths = parse_uri_list(&text).unwrap();
+        assert_eq!(paths, vec![f]);
     }
 }
