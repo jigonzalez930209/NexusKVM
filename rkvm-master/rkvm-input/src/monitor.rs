@@ -86,62 +86,86 @@ async fn scan_dir(
                 }
             }
             Ok(None) => {}
-            Err(err) => return Err(err),
+            // One unreadable/hot-unplugged node must never kill the monitor:
+            // losing the whole input server over an ENODEV race is far worse
+            // than skipping the device until the next scan.
+            Err(err) => {
+                tracing::warn!(path = %path.display(), %err, "skipping input device");
+            }
         }
     }
     Ok(())
 }
 
 async fn monitor(sender: Sender<Result<Interceptor, Error>>) {
-    let run = async {
-        tracing::info!("/dev/input monitor: rescan + skip virtual (does not abort on EACCES)");
-        let registry = Registry::new();
-        scan_dir(&registry, &sender).await?;
+    let registry = Registry::new();
+    tracing::info!("/dev/input monitor: rescan + skip virtual (does not abort on EACCES)");
 
-        let inotify = Inotify::init()?;
-        inotify
-            .watches()
-            .add(EVENT_PATH, WatchMask::CREATE | WatchMask::ATTRIB)?;
-        let mut stream = inotify.into_event_stream([0; 1024])?;
-        let mut rescan = time::interval(Duration::from_secs(2));
-        rescan.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+    if let Err(err) = scan_dir(&registry, &sender).await {
+        tracing::warn!(%err, "initial input scan failed; retrying periodically");
+    }
 
-        loop {
-            tokio::select! {
-                _ = rescan.tick() => {
-                    scan_dir(&registry, &sender).await?;
+    let mut rescan = time::interval(Duration::from_secs(2));
+    rescan.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+
+    let mut stream = match init_inotify() {
+        Ok(stream) => stream,
+        Err(err) => {
+            // No inotify: keep working with the periodic rescan only.
+            tracing::warn!(%err, "inotify unavailable; falling back to polling");
+            loop {
+                rescan.tick().await;
+                if let Err(err) = scan_dir(&registry, &sender).await {
+                    tracing::warn!(%err, "input rescan failed");
                 }
-                event = stream.next() => {
-                    let Some(event) = event else { break };
-                    let event = event?;
-                    let Some(name) = event.name else { continue };
-                    let path = PathBuf::from(EVENT_PATH).join(name);
-                    if !is_event_node(&path) {
+            }
+        }
+    };
+
+    loop {
+        if sender.is_closed() {
+            return;
+        }
+        tokio::select! {
+            _ = rescan.tick() => {
+                if let Err(err) = scan_dir(&registry, &sender).await {
+                    tracing::warn!(%err, "input rescan failed");
+                }
+            }
+            event = stream.next() => {
+                let Some(event) = event else { break };
+                let event = match event {
+                    Ok(event) => event,
+                    Err(err) => {
+                        tracing::warn!(%err, "inotify event error; continuing");
                         continue;
                     }
-                    match try_open(&path, &registry).await {
-                        Ok(Some(interceptor)) => {
-                            if sender.send(Ok(interceptor)).await.is_err() {
-                                return Ok(());
-                            }
+                };
+                let Some(name) = event.name else { continue };
+                let path = PathBuf::from(EVENT_PATH).join(name);
+                if !is_event_node(&path) {
+                    continue;
+                }
+                match try_open(&path, &registry).await {
+                    Ok(Some(interceptor)) => {
+                        if sender.send(Ok(interceptor)).await.is_err() {
+                            return;
                         }
-                        Ok(None) => {}
-                        Err(err) => return Err(err),
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        tracing::warn!(path = %path.display(), %err, "skipping input device");
                     }
                 }
             }
         }
-
-        Ok(())
-    };
-
-    tokio::select! {
-        result = run => match result {
-            Ok(_) => {},
-            Err(err) => {
-                let _ = sender.send(Err(err)).await;
-            }
-        },
-        _ = sender.closed() => {}
     }
+}
+
+fn init_inotify() -> Result<inotify::EventStream<[u8; 1024]>, Error> {
+    let inotify = Inotify::init()?;
+    inotify
+        .watches()
+        .add(EVENT_PATH, WatchMask::CREATE | WatchMask::ATTRIB)?;
+    inotify.into_event_stream([0; 1024])
 }

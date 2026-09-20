@@ -17,9 +17,22 @@ pub struct Boost {
 ///    CAP_SYS_NICE (root services get it; run `sudo setcap cap_sys_nice+ep`
 ///    on the binaries otherwise).
 /// 2. Fallback: best-effort negative nice.
-/// 3. `mlockall(MCL_CURRENT | MCL_FUTURE)` — pages never swap out, killing
-///    soft page-fault stalls mid-event-stream.
+/// 3. `mlockall(MCL_CURRENT)` — already-mapped pages never swap out, killing
+///    soft page-fault stalls. `MCL_FUTURE` is deliberately not used: it makes
+///    every later allocation fail once RLIMIT_MEMLOCK is exhausted, and Rust's
+///    allocation error handler aborts the process.
 pub fn boost_cpu() -> Boost {
+    let mut out = boost_thread();
+    out.memlocked = lock_memory();
+    out
+}
+
+/// Per-thread boost for tokio worker threads (no mlockall, no logging).
+///
+/// Must run on each worker: `sched_setscheduler(0, ...)` only affects the
+/// calling thread, so boosting just the main thread leaves the input tasks on
+/// SCHED_OTHER.
+pub fn boost_thread() -> Boost {
     let mut out = Boost {
         rt_prio: None,
         nice: 0,
@@ -48,12 +61,11 @@ pub fn boost_cpu() -> Boost {
         }
     }
 
-    out.memlocked = lock_memory();
     out
 }
 
 fn lock_memory() -> bool {
-    let rc = unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) };
+    let rc = unsafe { libc::mlockall(libc::MCL_CURRENT) };
     if rc != 0 {
         let err = io::Error::last_os_error();
         eprintln!("mlockall failed ({err}); continuing without memory pinning");

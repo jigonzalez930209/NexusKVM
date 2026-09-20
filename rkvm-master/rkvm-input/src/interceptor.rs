@@ -94,6 +94,17 @@ impl Interceptor {
                 continue;
             }
 
+            // While resyncing after SYN_DROPPED, input must not leak to the
+            // local machine: raw-writing these would move the local cursor or
+            // press local keys while a remote target owns input.
+            if self.dropped
+                && (u32::from(r#type) == glue::EV_REL
+                    || u32::from(r#type) == glue::EV_ABS
+                    || u32::from(r#type) == glue::EV_KEY)
+            {
+                continue;
+            }
+
             self.writing = Some((r#type, code, value));
             self.writer.write_raw(r#type, code, value).await?;
             self.writing = None;
