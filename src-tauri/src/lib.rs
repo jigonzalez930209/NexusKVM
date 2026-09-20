@@ -310,10 +310,26 @@ async fn switch_edge(app: tauri::AppHandle, normalized_position: f32) -> Result<
             _ => return Err("unexpected peer control reply".into()),
         }
     } else {
-        // Same path as the physical Ctrl+Alt chord: cycle to the next
-        // connected target. No target guessing here, so a stale peer id can
-        // no longer make the edge switch fail.
-        let response = match runtime::control_client().send(ControlCommand::Next).await {
+        // Dedicated edge-crossing command: the daemon picks the connected peer
+        // and applies containment (no-op while already remote or inside the
+        // debounce window), so a duplicated portal event can never cycle
+        // control straight back to this machine.
+        let side = runtime::get_layout(&app)
+            .map(|f| f.peer_side)
+            .unwrap_or(nexus_common::PeerSide::Right);
+        let edge = match side {
+            nexus_common::PeerSide::Left => Edge::Left,
+            nexus_common::PeerSide::Right => Edge::Right,
+            nexus_common::PeerSide::Top => Edge::Top,
+            nexus_common::PeerSide::Bottom => Edge::Bottom,
+        };
+        let response = match runtime::control_client()
+            .send(ControlCommand::SwitchEdge {
+                side: edge,
+                position: normalized_position,
+            })
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 if let Some(d) = dir.as_deref() {
