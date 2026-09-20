@@ -3,12 +3,12 @@ use rkvm_input::abs::{AbsAxis, AbsEvent, AbsInfo};
 use rkvm_input::event::Event;
 use rkvm_input::key::{Key, KeyEvent};
 use rkvm_input::monitor::Monitor;
-use rkvm_input::rel::RelAxis;
+use rkvm_input::rel::{RelAxis, RelEvent};
 use rkvm_input::sync::SyncEvent;
 use rkvm_net::auth::{AuthChallenge, AuthResponse, AuthStatus};
-use rkvm_net::message::Message;
+use rkvm_net::message::{FrameDecoder, Message};
 use rkvm_net::version::Version;
-use rkvm_net::{Pong, Update};
+use rkvm_net::{ClientEvent, Update};
 use slab::Slab;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::CString;
@@ -16,6 +16,14 @@ use std::io::{self, ErrorKind};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// How long a target may stay active without the peer confirming the handoff
+/// before control reverts to this machine. Keeps a lost or wedged client from
+/// silently swallowing the keyboard.
+const READY_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Pixels the local pointer is pushed away from the portal edge on return.
+const LOCAL_WARP_PX: i32 = 32;
 
 /// Shared registry of per-peer round-trip times in milliseconds, keyed by peer id.
 pub type PeerLatencies = Arc<Mutex<HashMap<String, u32>>>;
@@ -38,8 +46,6 @@ pub enum Error {
     Network(io::Error),
     #[error("Input error: {0}")]
     Input(io::Error),
-    #[error("Event queue overflow")]
-    Overflow,
 }
 
 struct ClientSlot {
@@ -47,6 +53,13 @@ struct ClientSlot {
     #[allow(dead_code)]
     addr: SocketAddr,
     id: String,
+}
+
+/// A handoff waiting for the peer's `Ready` confirmation.
+struct PendingReady {
+    peer: String,
+    epoch: u64,
+    due: Instant,
 }
 
 pub async fn run(
@@ -72,6 +85,9 @@ pub async fn run(
     // blocked the interceptor until each TLS flush and caused SYN_DROPPED.
     let (events_sender, mut events_receiver) = mpsc::channel(1024);
     let (reg_tx, mut reg_rx) = mpsc::channel::<(String, SocketAddr, Sender<Update>)>(16);
+    let (ready_tx, mut ready_rx) = mpsc::channel::<(String, u64)>(32);
+    let mut pending_ready: Option<PendingReady> = None;
+    let mut confirmed_epoch: u64 = 0;
     control.publish(router.snapshot());
     let mut prune_tick = time::interval(Duration::from_millis(250));
     prune_tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
@@ -87,7 +103,35 @@ pub async fn run(
                     let active = router.active_target().to_string();
                     emit_warp(&mut devices, &mut clients, &mut router, active, edge, pos).await?;
                 }
+                if router.active_target() == LOCAL_TARGET {
+                    // A confirmed return: push the local cursor away from the
+                    // portal edge so the next event is not another crossing.
+                    if let Some(edge) = router.take_local_warp() {
+                        emit_local_warp(&mut devices, edge);
+                    }
+                    pending_ready = None;
+                    confirmed_epoch = router.last_transition_seq();
+                } else if router.last_transition_seq() != confirmed_epoch
+                    && pending_ready.is_none()
+                {
+                    if let Some((peer, epoch)) = arm_ready(&mut clients, &router).await {
+                        pending_ready = Some(PendingReady {
+                            peer,
+                            epoch,
+                            due: Instant::now() + READY_TIMEOUT,
+                        });
+                    }
+                }
                 control.publish(router.snapshot());
+            }
+            Some((peer, epoch)) = ready_rx.recv() => {
+                if let Some(p) = &pending_ready {
+                    if p.epoch == epoch && p.peer == peer {
+                        tracing::info!(peer = %peer, epoch, "control confirmed by peer");
+                        pending_ready = None;
+                        confirmed_epoch = epoch;
+                    }
+                }
             }
             _ = prune_tick.tick() => {
                 prune_and_release(
@@ -98,6 +142,20 @@ pub async fn run(
                     &control,
                 )
                 .await?;
+                if pending_ready
+                    .as_ref()
+                    .map(|p| Instant::now() >= p.due)
+                    .unwrap_or(false)
+                {
+                    revert_unconfirmed(
+                        &mut devices,
+                        &mut clients,
+                        &mut router,
+                        &mut pending_ready,
+                        &control,
+                    )
+                    .await?;
+                }
             }
             Some((id, addr, sender)) = reg_rx.recv() => {
                 prune_and_release(
@@ -145,6 +203,7 @@ pub async fn run(
                 let span = tracing::info_span!("connection", addr = %addr);
                 let client_latencies = latencies.clone();
                 let reg_tx = reg_tx.clone();
+                let ready_tx = ready_tx.clone();
                 tokio::spawn(
                     async move {
                         tracing::info!("Connected");
@@ -156,6 +215,7 @@ pub async fn run(
                             addr,
                             client_latencies.clone(),
                             reg_tx,
+                            ready_tx,
                         )
                         .await
                         {
@@ -286,6 +346,25 @@ pub async fn run(
                                     held,
                                 )
                                 .await?;
+                                if router.active_target() == LOCAL_TARGET {
+                                    if let Some(edge) = router.take_local_warp() {
+                                        emit_local_warp(&mut devices, edge);
+                                    }
+                                    pending_ready = None;
+                                    confirmed_epoch = router.last_transition_seq();
+                                } else if router.last_transition_seq() != confirmed_epoch
+                                    && pending_ready.is_none()
+                                {
+                                    if let Some((peer, epoch)) =
+                                        arm_ready(&mut clients, &router).await
+                                    {
+                                        pending_ready = Some(PendingReady {
+                                            peer,
+                                            epoch,
+                                            due: Instant::now() + READY_TIMEOUT,
+                                        });
+                                    }
+                                }
                                 control.publish(router.snapshot());
                             }
                             Err(err) => {
@@ -398,7 +477,12 @@ async fn route_events(
         for event in events {
             match devices[device_id].sender.try_send(event) {
                 Ok(()) | Err(TrySendError::Closed(_)) => {}
-                Err(TrySendError::Full(_)) => return Err(Error::Overflow),
+                // Never kill the server over a transient local queue spike:
+                // dropping an event degrades input for a frame, dying locks
+                // the user out of their own machine.
+                Err(TrySendError::Full(_)) => {
+                    tracing::warn!(device = device_id, "Local event queue full; dropping event");
+                }
             }
         }
         return Ok(());
@@ -444,7 +528,9 @@ async fn emit_releases(
                 ] {
                     match device.sender.try_send(event) {
                         Ok(()) | Err(TrySendError::Closed(_)) => {}
-                        Err(TrySendError::Full(_)) => return Err(Error::Overflow),
+                        Err(TrySendError::Full(_)) => {
+                            tracing::warn!(key = ?key, "Local release queue full; dropping release");
+                        }
                     }
                 }
             }
@@ -476,6 +562,75 @@ fn lerp_abs(normalized: f32, min: i32, max: i32) -> i32 {
     }
     let t = normalized.clamp(0.0, 1.0);
     min + ((max - min) as f32 * t).round() as i32
+}
+
+/// Send the ownership handshake to the newly active peer. Returns the peer id
+/// and epoch that must be confirmed with `Ready`.
+async fn arm_ready(clients: &mut Slab<ClientSlot>, router: &TargetRouter) -> Option<(String, u64)> {
+    let target = router.active_target().to_string();
+    if target == LOCAL_TARGET {
+        return None;
+    }
+    let epoch = router.last_transition_seq();
+    let slot = clients.iter_mut().find(|(_, c)| c.id == target)?;
+    if slot.1.sender.try_send(Update::TakeControl { epoch }).is_err() {
+        if slot.1.sender.send(Update::TakeControl { epoch }).await.is_err() {
+            return None;
+        }
+    }
+    Some((target, epoch))
+}
+
+/// The peer never confirmed the handoff: take control back instead of leaving
+/// the user typing into a machine that may be asleep or wedged.
+async fn revert_unconfirmed(
+    devices: &mut Slab<Device>,
+    clients: &mut Slab<ClientSlot>,
+    router: &mut TargetRouter,
+    pending: &mut Option<PendingReady>,
+    control: &TargetControl,
+) -> Result<(), Error> {
+    let Some(p) = pending.take() else {
+        return Ok(());
+    };
+    if router.active_target() != p.peer {
+        return Ok(());
+    }
+    tracing::warn!(peer = %p.peer, epoch = p.epoch, "control unconfirmed; reverting to local");
+    let held = router.drain_held();
+    let _ = router.switch_local();
+    emit_releases(devices, clients, router, held).await?;
+    if let Some(edge) = router.take_local_warp() {
+        emit_local_warp(devices, edge);
+    }
+    control.publish(router.snapshot());
+    Ok(())
+}
+
+/// Push the local cursor away from the portal edge by re-injecting relative
+/// motion into the grabbed device (same path local events take).
+fn emit_local_warp(devices: &mut Slab<Device>, edge: u8) {
+    let (axis, delta) = match edge {
+        // 0=left 1=right 2=top 3=bottom
+        0 => (RelAxis::X, LOCAL_WARP_PX),
+        1 => (RelAxis::X, -LOCAL_WARP_PX),
+        2 => (RelAxis::Y, LOCAL_WARP_PX),
+        _ => (RelAxis::Y, -LOCAL_WARP_PX),
+    };
+    for (_, device) in devices.iter() {
+        if !device.rel.contains(&axis) {
+            continue;
+        }
+        for event in [
+            Event::Rel(RelEvent { axis, value: delta }),
+            Event::Sync(SyncEvent::All),
+        ] {
+            match device.sender.try_send(event) {
+                Ok(()) | Err(TrySendError::Closed(_)) => {}
+                Err(TrySendError::Full(_)) => break,
+            }
+        }
+    }
 }
 
 async fn emit_warp(
@@ -555,6 +710,7 @@ async fn client(
     addr: SocketAddr,
     latencies: PeerLatencies,
     reg_tx: Sender<(String, SocketAddr, Sender<Update>)>,
+    ready_tx: Sender<(String, u64)>,
 ) -> Result<(), ClientError> {
     let stream = rkvm_net::timeout(rkvm_net::TLS_TIMEOUT, acceptor.accept(stream)).await?;
     tracing::info!("TLS connected");
@@ -622,6 +778,7 @@ async fn client(
     let mut awaiting_pong = false;
     let mut ping_sent_at = Instant::now();
     let pong_limit = rkvm_net::PING_INTERVAL + rkvm_net::READ_TIMEOUT;
+    let mut control_rx = FrameDecoder::new();
 
     loop {
         let mut batch = Vec::new();
@@ -643,16 +800,33 @@ async fn client(
         tokio::select! {
             biased;
 
-            result = Pong::decode(&mut stream), if awaiting_pong => {
-                result?;
-                let duration = ping_sent_at.elapsed();
-                tracing::debug!(duration = ?duration, "Received pong");
-                latencies
-                    .lock()
-                    .unwrap()
-                    .insert(id.to_string(), duration.as_millis().min(u32::MAX as u128) as u32);
-                awaiting_pong = false;
-                continue;
+            result = control_rx.recv(&mut stream) => {
+                match result? {
+                    ClientEvent::Pong => {
+                        if awaiting_pong {
+                            let duration = ping_sent_at.elapsed();
+                            tracing::debug!(duration = ?duration, "Received pong");
+                            latencies
+                                .lock()
+                                .unwrap()
+                                .insert(id.to_string(), duration.as_millis().min(u32::MAX as u128) as u32);
+                            awaiting_pong = false;
+                        } else {
+                            tracing::trace!("Unsolicited pong ignored");
+                        }
+                        continue;
+                    }
+                    ClientEvent::Ready { epoch } => {
+                        tracing::debug!(epoch, "Peer confirmed control handoff");
+                        if ready_tx.send((id.to_string(), epoch)).await.is_err() {
+                            return Err(ClientError::Io(io::Error::new(
+                                io::ErrorKind::BrokenPipe,
+                                "control loop closed",
+                            )));
+                        }
+                        continue;
+                    }
+                }
             }
             _ = pong_timeout, if awaiting_pong => {
                 return Err(ClientError::Io(io::Error::new(

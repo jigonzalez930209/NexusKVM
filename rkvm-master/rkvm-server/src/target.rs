@@ -60,6 +60,11 @@ pub struct TargetRouter {
     held_keys: HashMap<Key, String>,
     next_transition: u64,
     pending_warp: Option<(u8, f32)>,
+    /// Edge the pointer crossed on this machine when the remote was entered.
+    /// Used to push the local cursor back inwards on return, so it does not sit
+    /// exactly on the portal pixel and re-trigger the switch.
+    return_edge: Option<u8>,
+    pending_local_warp: Option<u8>,
 }
 
 impl Default for TargetRouter {
@@ -80,6 +85,8 @@ impl TargetRouter {
             held_keys: HashMap::new(),
             next_transition: 0,
             pending_warp: None,
+            return_edge: None,
+            pending_local_warp: None,
         }
     }
 
@@ -157,12 +164,25 @@ impl TargetRouter {
         self.active = LOCAL_TARGET.to_string();
         self.chord_changed = false;
         self.busy = false;
+        self.pending_local_warp = self.return_edge.take();
         self.drain_held()
     }
 
     fn alloc_transition(&mut self) -> TransitionId {
         self.next_transition += 1;
         format!("{:016x}", self.next_transition)
+    }
+
+    /// Monotonic id of the last transition, used as the ownership epoch on the
+    /// wire so duplicate or stale switch requests can be detected.
+    pub fn last_transition_seq(&self) -> u64 {
+        self.next_transition
+    }
+
+    /// Consume the edge the local pointer should be pushed away from after
+    /// control comes back, if any.
+    pub fn take_local_warp(&mut self) -> Option<u8> {
+        self.pending_local_warp.take()
     }
 
     fn connected(&self, id: &str) -> bool {
@@ -176,6 +196,13 @@ impl TargetRouter {
         if !self.connected(id) {
             return Err(TargetError::PeerUnavailable(id.to_string()));
         }
+        // `warp` carries the *remote* entry edge (opposite of the crossed one).
+        self.return_edge = warp.map(|(edge, _)| match edge {
+            0 => 1,
+            1 => 0,
+            2 => 3,
+            _ => 2,
+        });
         self.pending_warp = warp;
         Ok(())
     }
@@ -219,6 +246,10 @@ impl TargetRouter {
         self.previous = self.active.clone();
         self.active = LOCAL_TARGET.to_string();
         self.chord_changed = from_chord;
+        // The local cursor is parked on the portal edge; move it back inwards
+        // so the very next motion event is not another crossing.
+        self.pending_local_warp = self.return_edge.take();
+        self.pending_warp = None;
         if !from_chord {
             self.held_keys.clear();
         }
@@ -561,6 +592,38 @@ mod tests {
         c.finish_chord();
         c.switch_next().unwrap();
         assert_eq!(c.active_target(), LOCAL_TARGET);
+    }
+
+    #[test]
+    fn edge_crossing_pushes_local_cursor_inward_on_return() {
+        let mut c = fixture_with_peer("b", true);
+        // Remote entry edge 0 (left) means the host crossed its right edge.
+        c.prepare("b", Some((0, 0.5))).unwrap();
+        c.switch_to("b").unwrap();
+        assert_eq!(c.take_local_warp(), None);
+        c.switch_local().unwrap();
+        assert_eq!(c.take_local_warp(), Some(1));
+        // Consumed exactly once.
+        assert_eq!(c.take_local_warp(), None);
+    }
+
+    #[test]
+    fn chord_switch_does_not_warp_local_cursor() {
+        let mut c = fixture_with_peer("b", true);
+        c.switch_next().unwrap();
+        c.finish_chord();
+        c.switch_local().unwrap();
+        assert_eq!(c.take_local_warp(), None);
+    }
+
+    #[test]
+    fn transition_seq_is_monotonic() {
+        let mut c = fixture_with_peer("b", true);
+        assert_eq!(c.last_transition_seq(), 0);
+        c.switch_to("b").unwrap();
+        let first = c.last_transition_seq();
+        c.switch_local().unwrap();
+        assert!(c.last_transition_seq() > first);
     }
 
     #[tokio::test]
