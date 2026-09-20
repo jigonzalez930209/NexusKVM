@@ -93,4 +93,59 @@ describe('EdgePortal arming and return hysteresis logic', () => {
     expect(validEdges.includes('top')).toBe(true);
     expect(validEdges.includes('bottom')).toBe(true);
   });
+
+  it('stays disarmed while a remote target owns control, even after leaving the portal', () => {
+    let isArmed = true;
+    let switchCalls = 0;
+    let activeTarget = 'local';
+    let leaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function onTrigger() {
+      if (activeTarget !== 'local') return false;
+      if (!isArmed) return false;
+      isArmed = false;
+      switchCalls++;
+      return true;
+    }
+
+    function onMouseLeave() {
+      if (leaveTimer) clearTimeout(leaveTimer);
+      leaveTimer = setTimeout(() => {
+        if (activeTarget === 'local') isArmed = true;
+        leaveTimer = null;
+      }, 200);
+    }
+
+    function onTargetChanged(newTarget: string) {
+      activeTarget = newTarget;
+      if (leaveTimer) {
+        clearTimeout(leaveTimer);
+        leaveTimer = null;
+      }
+      isArmed = false;
+    }
+
+    // Cross to remote: control is handed over.
+    expect(onTrigger()).toBe(true);
+    expect(switchCalls).toBe(1);
+    // Target-changed event confirms the handoff.
+    onTargetChanged('192.168.1.9');
+
+    // Cursor leaves the strip while remote: re-arm timer must NOT arm.
+    onMouseLeave();
+    vi.advanceTimersByTime(5000);
+    expect(isArmed).toBe(false);
+
+    // Any stray edge event while remote is dropped (containment).
+    expect(onTrigger()).toBe(false);
+    expect(switchCalls).toBe(1);
+
+    // Deliberate return: only now can the portal arm again.
+    onTargetChanged('local');
+    onMouseLeave();
+    vi.advanceTimersByTime(201);
+    expect(isArmed).toBe(true);
+    expect(onTrigger()).toBe(true);
+    expect(switchCalls).toBe(2);
+  });
 });
