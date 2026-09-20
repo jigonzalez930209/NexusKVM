@@ -1,8 +1,8 @@
 use rkvm_input::writer::Writer;
 use rkvm_net::auth::{AuthChallenge, AuthStatus};
-use rkvm_net::message::Message;
+use rkvm_net::message::{FrameDecoder, Message};
 use rkvm_net::version::Version;
-use rkvm_net::{Pong, Update};
+use rkvm_net::{ClientEvent, Update};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::io;
@@ -107,13 +107,14 @@ pub async fn run(
 
     let mut interval = time::interval(rkvm_net::PING_INTERVAL + rkvm_net::READ_TIMEOUT);
     let mut writers = HashMap::new();
+    let mut decoder = FrameDecoder::new();
 
     // Interval ticks immediately after creation.
     interval.tick().await;
 
     loop {
         let update = tokio::select! {
-            update = Update::decode(&mut stream) => update.map_err(Error::Network)?,
+            update = decoder.recv(&mut stream) => update.map_err(Error::Network)?,
             _ = interval.tick() => return Err(Error::Network(io::Error::new(io::ErrorKind::TimedOut, "Ping timed out"))),
         };
 
@@ -196,7 +197,7 @@ pub async fn run(
                 interval.reset();
 
                 rkvm_net::timeout(rkvm_net::WRITE_TIMEOUT, async {
-                    Pong.encode(&mut stream).await?;
+                    ClientEvent::Pong.encode(&mut stream).await?;
                     stream.flush().await?;
 
                     Ok(())
@@ -206,6 +207,20 @@ pub async fn run(
 
                 let duration = start.elapsed();
                 tracing::trace!(duration = ?duration, "Sent pong");
+            }
+            Update::TakeControl { epoch } => {
+                // Every event that preceded this handshake has already been
+                // written to the uinput devices (single ordered stream), so the
+                // host can treat this acknowledgement as "input is landing".
+                tracing::info!(epoch, "Control handoff received; confirming");
+                rkvm_net::timeout(rkvm_net::WRITE_TIMEOUT, async {
+                    ClientEvent::Ready { epoch }.encode(&mut stream).await?;
+                    stream.flush().await?;
+
+                    Ok(())
+                })
+                .await
+                .map_err(Error::Network)?;
             }
         }
     }
