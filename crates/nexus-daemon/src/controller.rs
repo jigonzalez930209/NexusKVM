@@ -321,6 +321,45 @@ impl<T: InputTransport> Controller<T> {
             }
         }
     }
+
+    /// Return request from the peer's edge portal.
+    ///
+    /// Unlike `local()`, the transport contains it until the remote pointer has
+    /// actually moved away from its entry edge: a portal-pixel bounce must not
+    /// steal control back. Held keys are released by the router itself on a
+    /// real transition, so no `release_all` is needed here.
+    pub async fn local_from_peer(&self) -> Result<Uuid> {
+        let _guard = self.transition.lock().await;
+        let id = Uuid::new_v4();
+        let current = self.transport.active_target();
+        if current == LOCAL_TARGET {
+            return Ok(id);
+        }
+        match self.transport.local_from_peer().await {
+            Ok(()) => {
+                let active = self.transport.active_target();
+                if active == LOCAL_TARGET {
+                    self.mark_transition();
+                    *self.active_target.write() = LOCAL_TARGET.into();
+                    *self.state.write() = RuntimeState::Local;
+                    let _ = self.refresh_peers().await;
+                    tracing::info!(from = %current, "local: control returned (peer request)");
+                } else {
+                    tracing::info!(from = %current, "local: peer return contained");
+                    *self.active_target.write() = active.clone();
+                    *self.state.write() = Self::state_for_active(&active);
+                }
+                Ok(id)
+            }
+            Err(e) => {
+                let active = self.transport.active_target();
+                *self.active_target.write() = active.clone();
+                *self.state.write() = Self::state_for_active(&active);
+                Err(e)
+            }
+        }
+    }
+
     pub async fn recover(&self, reason: impl Into<String>) -> Result<()> {
         let _guard = self.transition.lock().await;
         *self.state.write() = RuntimeState::Recovering {
@@ -489,6 +528,21 @@ mod tests {
         let later = c.switch_edge(Edge::Right, 0.5).await.unwrap();
         assert!(!later.is_nil());
         assert_eq!(c.status().active_target, "b");
+    }
+
+    #[tokio::test]
+    async fn peer_local_contained_until_motion() {
+        let c = Controller::new(handle_with_peer("b", true));
+        c.refresh_peers().await.unwrap();
+        c.switch_edge(Edge::Right, 0.5).await.unwrap();
+        assert_eq!(c.status().active_target, "b");
+        // No motion has been routed through the real server in this fixture,
+        // so the peer return must be contained and control stay remote.
+        c.local_from_peer().await.unwrap();
+        assert_eq!(c.status().active_target, "b");
+        // An explicit local request (host UI / chord) always works.
+        c.local().await.unwrap();
+        assert_eq!(c.status().active_target, LOCAL_TARGET);
     }
 
     #[tokio::test]
