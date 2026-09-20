@@ -17,5 +17,10 @@ Implementation: `crates/nexus-agent/src/backend.rs` (`PortalBackend`).
 
 GNOME notes:
 
+- InputCapture uses the same remote-access machinery as screen casting, so any
+  active session makes GNOME show its screen-capture indicator when a barrier
+  activates (mutter MR !2392). For that reason the agent no longer registers an
+  InputCapture session; switching runs through the X11 edge strip (`EdgePortal`).
+  `PortalBackend`/`EdgeEngine` stay in the tree for reference or future opt-in.
 - Changing barriers after `Disable` can fail on re-enable (GNOME portal bug 46+).
 - The agent uses *soft-suspend* (ignores `Activated`) when the active destination is not local.

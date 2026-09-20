@@ -11,6 +11,18 @@ The `.deb` package is the simplest and recommended method. Its post-installation
 2. Automatically loading the `uinput` kernel module.
 3. Reloading and triggering `udev` rules.
 4. Opening firewall ports `5258/tcp` and `5259/tcp` if `ufw` is active.
+5. **Mandatory runtime apply** (`nexuskvm-runtime-apply.sh`): mirrors the
+   packaged binaries into `/usr/libexec/nexuskvm`, kills stale `nexus-agent` /
+   `nexus-kvmd` / `rkvm-client` processes, restarts the enabled
+   `nexuskvm-host` / `nexuskvm-client` units, and verifies deploy markers so a
+   stale daemon or a portal-enabled agent cannot survive an upgrade.
+
+If any of those verifications fail, the install aborts. To downgrade the checks
+to warnings (not recommended):
+
+```bash
+sudo NEXUSKVM_POSTINSTALL_STRICT=0 apt install --reinstall ./NexusKVM_0.1.0_amd64.deb
+```
 
 ### Installation Command
 
