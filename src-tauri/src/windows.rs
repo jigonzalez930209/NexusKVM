@@ -10,7 +10,32 @@ const PANEL_H: f64 = 560.0;
 const OFFSET_RIGHT: f64 = 10.0;
 const OFFSET_TOP: f64 = 50.0;
 
+/// Run a GTK/window operation on the main thread.
+///
+/// GDK is not thread-safe: `available_monitors()` / `current_monitor()` and
+/// every `WebviewWindow` show/hide/set_position call must happen on the main
+/// thread. Calling them from tokio workers (watcher loop, ksni tray thread,
+/// async commands) corrupted the heap and segfaulted inside libgdk-3
+/// (`malloc(): unaligned tcache chunk detected`).
+fn on_main<F>(app: &AppHandle, f: F) -> Result<(), String>
+where
+    F: FnOnce(&AppHandle) -> Result<(), String> + Send + 'static,
+{
+    let app = app.clone();
+    let main_app = app.clone();
+    app.run_on_main_thread(move || {
+        if let Err(e) = f(&main_app) {
+            eprintln!("windows: main-thread window op failed: {e}");
+        }
+    })
+    .map_err(|e| e.to_string())
+}
+
 pub fn position_tray_panel(app: &AppHandle) -> Result<(), String> {
+    on_main(app, position_tray_panel_main)
+}
+
+fn position_tray_panel_main(app: &AppHandle) -> Result<(), String> {
     let panel = app
         .get_webview_window(TRAY_PANEL_WINDOW)
         .ok_or_else(|| format!("Window '{TRAY_PANEL_WINDOW}' not found"))?;
@@ -57,20 +82,21 @@ pub fn position_tray_panel(app: &AppHandle) -> Result<(), String> {
 
 /// Place the panel at the top-right of the screen and ensure window manager
 /// centering does not override the placement.
-pub fn show_tray_panel(app: &AppHandle) -> Result<(), String> {
+fn show_tray_panel_main(app: &AppHandle) -> Result<(), String> {
     let panel = app
         .get_webview_window(TRAY_PANEL_WINDOW)
         .ok_or_else(|| format!("Window '{TRAY_PANEL_WINDOW}' not found"))?;
 
-    let _ = position_tray_panel(app);
+    let _ = position_tray_panel_main(app);
     let _ = panel.unminimize();
     panel.show().map_err(|e| e.to_string())?;
-    let _ = position_tray_panel(app);
+    let _ = position_tray_panel_main(app);
     let _ = panel.set_focus();
 
     // On Linux window managers (GNOME/Mutter, XFCE, KWin), the WM asynchronously
     // applies its default window placement policy upon map. We re-apply position
-    // after small intervals so the panel stays locked to the top-right.
+    // after small intervals so the panel stays locked to the top-right. The
+    // public wrapper marshals each call back onto the main thread.
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
@@ -85,6 +111,10 @@ pub fn show_tray_panel(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn hide_tray_panel(app: &AppHandle) -> Result<(), String> {
+    on_main(app, hide_tray_panel_main)
+}
+
+fn hide_tray_panel_main(app: &AppHandle) -> Result<(), String> {
     let panel = app
         .get_webview_window(TRAY_PANEL_WINDOW)
         .ok_or_else(|| format!("Window '{TRAY_PANEL_WINDOW}' not found"))?;
@@ -93,6 +123,10 @@ pub fn hide_tray_panel(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn toggle_tray_panel(app: &AppHandle) -> Result<(), String> {
+    on_main(app, toggle_tray_panel_main)
+}
+
+fn toggle_tray_panel_main(app: &AppHandle) -> Result<(), String> {
     let panel = app
         .get_webview_window(TRAY_PANEL_WINDOW)
         .ok_or_else(|| format!("Window '{TRAY_PANEL_WINDOW}' not found"))?;
@@ -100,13 +134,20 @@ pub fn toggle_tray_panel(app: &AppHandle) -> Result<(), String> {
     let visible = panel.is_visible().map_err(|e| e.to_string())?;
 
     if visible {
-        hide_tray_panel(app)
+        hide_tray_panel_main(app)
     } else {
-        show_tray_panel(app)
+        show_tray_panel_main(app)
     }
 }
 
 pub fn position_edge_portal(app: &AppHandle, side: Option<&str>) -> Result<(), String> {
+    let side = side.map(str::to_string);
+    on_main(app, move |app| {
+        position_edge_portal_main(app, side.as_deref())
+    })
+}
+
+fn position_edge_portal_main(app: &AppHandle, side: Option<&str>) -> Result<(), String> {
     let portal = app
         .get_webview_window(EDGE_PORTAL_WINDOW)
         .ok_or_else(|| format!("Window '{EDGE_PORTAL_WINDOW}' not found"))?;
@@ -198,27 +239,39 @@ fn edge_monitor(app: &AppHandle, side: &str) -> Option<tauri::Monitor> {
     if monitors.is_empty() {
         return None;
     }
+    // Compare the far edge (origin + size), not the origin: with mixed monitor
+    // sizes the origin alone can pick the wrong monitor for right/bottom.
+    let right = |m: &tauri::Monitor| m.position().x + m.size().width as i32;
+    let bottom = |m: &tauri::Monitor| m.position().y + m.size().height as i32;
     match side {
         "left" => monitors.into_iter().min_by_key(|m| m.position().x),
         "top" => monitors.into_iter().min_by_key(|m| m.position().y),
-        "bottom" => monitors.into_iter().max_by_key(|m| m.position().y),
-        _ => monitors.into_iter().max_by_key(|m| m.position().x),
+        "bottom" => monitors.into_iter().max_by_key(bottom),
+        _ => monitors.into_iter().max_by_key(right),
     }
 }
 
 pub fn show_edge_portal(app: &AppHandle) -> Result<(), String> {
+    on_main(app, show_edge_portal_main)
+}
+
+fn show_edge_portal_main(app: &AppHandle) -> Result<(), String> {
     let portal = app
         .get_webview_window(EDGE_PORTAL_WINDOW)
         .ok_or_else(|| format!("Window '{EDGE_PORTAL_WINDOW}' not found"))?;
 
-    let _ = position_edge_portal(app, None);
+    let _ = position_edge_portal_main(app, None);
     let _ = portal.show();
     let _ = portal.set_always_on_top(true);
-    let _ = position_edge_portal(app, None);
+    let _ = position_edge_portal_main(app, None);
     Ok(())
 }
 
 pub fn hide_edge_portal(app: &AppHandle) -> Result<(), String> {
+    on_main(app, hide_edge_portal_main)
+}
+
+fn hide_edge_portal_main(app: &AppHandle) -> Result<(), String> {
     let portal = app
         .get_webview_window(EDGE_PORTAL_WINDOW)
         .ok_or_else(|| format!("Window '{EDGE_PORTAL_WINDOW}' not found"))?;
@@ -227,6 +280,10 @@ pub fn hide_edge_portal(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn open_main_window(app: &AppHandle) -> Result<(), String> {
+    on_main(app, open_main_window_main)
+}
+
+fn open_main_window_main(app: &AppHandle) -> Result<(), String> {
     let main = app
         .get_webview_window(MAIN_WINDOW)
         .ok_or_else(|| format!("Window '{MAIN_WINDOW}' not found"))?;
@@ -240,6 +297,10 @@ pub fn open_main_window(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn hide_main_window(app: &AppHandle) -> Result<(), String> {
+    on_main(app, hide_main_window_main)
+}
+
+fn hide_main_window_main(app: &AppHandle) -> Result<(), String> {
     let main = app
         .get_webview_window(MAIN_WINDOW)
         .ok_or_else(|| format!("Window '{MAIN_WINDOW}' not found"))?;
