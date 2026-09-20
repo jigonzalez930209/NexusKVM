@@ -233,17 +233,13 @@ impl<T: InputTransport> Controller<T> {
             RuntimeState::ReturningLocal { .. } | RuntimeState::Recovering { .. }
         );
         self.heal_transition_locked(&active);
-        if was_returning {
-            self.ensure_local_transport().await;
-            active = LOCAL_TARGET.into();
-        } else if active != LOCAL_TARGET
-            && !self
-                .peers
-                .read()
-                .get(&active)
-                .map(|p| p.status == PeerStatus::Connected)
-                .unwrap_or(false)
-        {
+        let active_peer_alive = self
+            .peers
+            .read()
+            .get(&active)
+            .map(|p| p.status == PeerStatus::Connected)
+            .unwrap_or(false);
+        if was_returning || (active != LOCAL_TARGET && !active_peer_alive) {
             self.ensure_local_transport().await;
             active = LOCAL_TARGET.into();
         }
