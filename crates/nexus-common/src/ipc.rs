@@ -21,6 +21,9 @@ pub enum ControlCommand {
     /// Same as the Ctrl+Alt chord: cycle to the next connected target.
     Next,
     Local,
+    /// Return requested by the peer's edge portal. Contained until the remote
+    /// pointer has moved away from its entry edge (anti-bounce).
+    PeerLocal,
     ReleaseAll,
     AgentHeartbeat {
         portal_available: bool,
