@@ -515,6 +515,20 @@ async fn route_events(
             id: device_id,
             event,
         };
+        // Track how far the remote pointer has traveled away from its entry
+        // edge: a peer-initiated return is only accepted after enough inward
+        // motion (prevents the portal-pixel bounce with REL-only mice).
+        if let Update::Event {
+            event: Event::Rel(rel),
+            ..
+        } = &update
+        {
+            match rel.axis {
+                RelAxis::X => router.note_remote_motion(rel.value, 0),
+                RelAxis::Y => router.note_remote_motion(0, rel.value),
+                _ => {}
+            }
+        }
         match clients[key].sender.try_send(update) {
             Ok(()) => {}
             Err(TrySendError::Full(update)) => {
