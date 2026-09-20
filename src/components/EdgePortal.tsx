@@ -58,6 +58,17 @@ export function EdgePortal() {
 
           isArmedRef.current = false;
           setCanSwitch(false);
+          // Returning to local while the cursor is already off the strip: re-arm
+          // after hysteresis so the next edge approach works without a click dance.
+          if (target === 'local') {
+            leaveTimerRef.current = setTimeout(() => {
+              if (activeTargetRef.current === 'local') {
+                isArmedRef.current = true;
+                setCanSwitch(true);
+              }
+              leaveTimerRef.current = null;
+            }, 200);
+          }
         })
         .then((unlisten) => {
           unlistenTarget = unlisten;
@@ -122,7 +133,14 @@ export function EdgePortal() {
     // do NOT switch to remote! Instead, keep resetting the 200ms timer so it only re-arms
     // 200ms after the mouse stops moving at the edge or leaves into the desktop.
     if (!isArmedRef.current) {
-      return;
+      // Safety re-arm: if we are back on local but the target event was missed
+      // or arrived out of order, never stay stuck disarmed forever.
+      if (activeTargetRef.current === 'local' && now - lastTriggerRef.current > 1500) {
+        isArmedRef.current = true;
+        setCanSwitch(true);
+      } else {
+        return;
+      }
     }
 
     if (now - lastTriggerRef.current < 300) {
