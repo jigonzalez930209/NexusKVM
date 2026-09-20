@@ -19,14 +19,15 @@ use tokio::time;
 
 pub const PING_INTERVAL: Duration = Duration::from_secs(1);
 
-// Message read timeout (does not apply to updates, only auth negotiation and replies).
-pub const READ_TIMEOUT: Duration = Duration::from_millis(500);
+// Message read timeout (does not apply to updates, only auth negotiation and
+// replies). Sized for Wi-Fi RTTs: 500ms broke links slower than ~250ms RTT.
+pub const READ_TIMEOUT: Duration = Duration::from_millis(1500);
 
 // Message write timeout (applies to all messages).
-pub const WRITE_TIMEOUT: Duration = Duration::from_millis(500);
+pub const WRITE_TIMEOUT: Duration = Duration::from_millis(1500);
 
 // TLS negotiation timeout.
-pub const TLS_TIMEOUT: Duration = Duration::from_millis(500);
+pub const TLS_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Deserialize, Serialize, Debug)]
 pub enum Update {
