@@ -12,7 +12,9 @@ Type=simple
 # desktop user (already in that group) can talk to the control socket.
 Group=input
 UMask=0007
-ExecStart=/usr/libexec/nexuskvm/nexus-kvmd --config /var/lib/nexuskvm/daemon.toml
+# Packaged binary lives in /usr/bin (Tauri externalBin). enable-boot may also
+# mirror it to libexec; prefer that copy when present so upgrades stay atomic.
+ExecStart=/bin/sh -c 'BIN=/usr/libexec/nexuskvm/nexus-kvmd; [ -x "$BIN" ] || BIN=/usr/bin/nexus-kvmd; exec "$BIN" --config /var/lib/nexuskvm/daemon.toml'
 Restart=always
 RestartSec=3
 # Kernel-level latency controls for the input path: allow the binary's
