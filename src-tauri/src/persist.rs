@@ -191,6 +191,27 @@ pub fn stop_boot_services() {
 
 /// Control socket used by the session agent / UI.
 pub fn control_socket_path() -> PathBuf {
+    // Called from the 200ms status watcher: cache the systemd probe, it forks
+    // `systemctl` and the answer only changes on service transitions.
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<(std::time::Instant, PathBuf)>>> =
+        std::sync::OnceLock::new();
+    const TTL: std::time::Duration = std::time::Duration::from_secs(5);
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some((at, path)) = guard.as_ref() {
+            if at.elapsed() < TTL {
+                return path.clone();
+            }
+        }
+    }
+    let resolved = resolve_control_socket_path();
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((std::time::Instant::now(), resolved.clone()));
+    }
+    resolved
+}
+
+fn resolve_control_socket_path() -> PathBuf {
     let system = PathBuf::from("/run/nexuskvm/control.sock");
     // Prefer the system daemon whenever its unit is up, even if the user cannot
     // `stat` the parent directory yet (permissions are fixed by Group=input).
