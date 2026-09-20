@@ -4,7 +4,10 @@ After=graphical-session.target
 PartOf=graphical-session.target
 
 [Service]
-ExecStart=/usr/bin/nexus-agent
+# --data-dir is required (clap); the pairing password is read from it. The unit
+# must run inside the graphical session so arboard can reach the clipboard
+# (Wayland data-control or X11); without session env the clipboard stays off.
+ExecStart=/usr/bin/nexus-agent --data-dir %h/.local/share/io.nexuskvm.app
 Restart=on-failure
 
 [Install]
