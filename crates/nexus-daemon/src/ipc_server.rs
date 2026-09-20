@@ -166,6 +166,14 @@ async fn handle<T: InputTransport>(
                 }
                 Err(e) => ControlResponse::error(id, e.to_string()),
             },
+            ControlCommand::PeerLocal => match c.local_from_peer().await {
+                Ok(t) => {
+                    let mut r = ControlResponse::ok(id, Some(c.status()));
+                    r.transition_id = Some(t);
+                    r
+                }
+                Err(e) => ControlResponse::error(id, e.to_string()),
+            },
             ControlCommand::ReleaseAll => match c.release_all().await {
                 Ok(_) => ControlResponse::ok(id, Some(c.status())),
                 Err(e) => ControlResponse::error(id, e.to_string()),
